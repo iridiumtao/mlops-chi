@@ -41,7 +41,7 @@ However, the cloud infrastructure provider will provide the compute resources an
 
 Before you begin, open this experiment on Trovi:
 
-* Use this link: [MLOps Pipeline](https://chameleoncloud.org/experiment/share/) on Trovi
+* Use this link: [MLOps Pipeline](https://chameleoncloud.org/experiment/share/1eb302de-4707-4ae9-ae2d-391b9b8e5261) on Trovi
 * Then, click “Launch on Chameleon”. This will start a new Jupyter server for you, with the experiment materials already in it.
 
 You will see several notebooks inside the `mlops-chi` directory - look for the one titled `0_intro.ipynb`. Open this notebook and execute the following cell (and make sure the correct project is selected):
