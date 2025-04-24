@@ -315,13 +315,14 @@ PYTHONUSERBASE=/work/.local pip install --user ansible-core==2.16.9 ansible==9.8
 
 
 
-The Ansible client has been installed to: `/work/.local/bin`. In order to run `ansible-playbook` commands, we will have to add this directory to our `PATH`, which tells the system where to look for executable files.
+The Ansible client has been installed to: `/work/.local/bin`. In order to run `ansible-playbook` commands, we will have to add this directory to our `PATH`, which tells the system where to look for executable files. We also need to let it know where to find the corresponding Python packages.
 
 
 
 ```bash
 # runs in Chameleon Jupyter environment
 export PATH=/work/.local/bin:$PATH
+export PYTHONPATH=/work/.local/lib/python3.10/site-packages:$PYTHONPATH
 ```
 
 
@@ -385,6 +386,7 @@ Both Terraform and Ansible executables have been installed to a location that is
 ```bash
 # runs in Chameleon Jupyter environment
 export PATH=/work/.local/bin:$PATH
+export PYTHONUSERBASE=/work/.local
 ```
 
 
