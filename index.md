@@ -322,7 +322,7 @@ The Ansible client has been installed to: `/work/.local/bin`. In order to run `a
 ```bash
 # runs in Chameleon Jupyter environment
 export PATH=/work/.local/bin:$PATH
-export PYTHONPATH=/work/.local/lib/python3.10/site-packages:$PYTHONPATH
+export PYTHONUSERBASE=/work/.local
 ```
 
 
