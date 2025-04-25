@@ -1430,7 +1430,7 @@ From the Argo Workflows UI, find the `promote-model` workflow template and click
 
 * specify "staging" as the source environment
 * specify "canary" as the target environment
-* and, specify the version number of the model that is currently in staging
+* and, specify the version number of the model that is currently in staging (e.g. `1` or `3` or whatever is currently deployed)
 
 Then, run the workflow. 
 
