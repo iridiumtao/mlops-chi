@@ -35,7 +35,7 @@ to build the container image.
 
 The "training" environment will send a model to the MLFlow model registry, which is running on Kubernetes, so it needs to know its address. In this case, it happens to be on the same host, but in general it doesn't need to be. 
 
-Start the "training" container with the command below, but in place of `A.B.C.D`, substitute the floating IP address associated with your Kubernetes deployment.
+Start the "training" container with the command below, but in place of `A.B.C.D`, **substitute the floating IP address associated with your Kubernetes deployment**.
 
 ```bash
 # runs on node1

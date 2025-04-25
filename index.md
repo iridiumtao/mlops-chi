@@ -1177,7 +1177,7 @@ to build the container image.
 
 The "training" environment will send a model to the MLFlow model registry, which is running on Kubernetes, so it needs to know its address. In this case, it happens to be on the same host, but in general it doesn't need to be. 
 
-Start the "training" container with the command below, but in place of `A.B.C.D`, substitute the floating IP address associated with your Kubernetes deployment.
+Start the "training" container with the command below, but in place of `A.B.C.D`, **substitute the floating IP address associated with your Kubernetes deployment**.
 
 ```bash
 # runs on node1
@@ -1451,35 +1451,6 @@ Take a screenshot, with both the address bar showing the URL and the response sh
 
 
 
-
-### Roll back a "bad" model version
-
-The staged deployment allows us to test new models safely, without affecting services that are actually exposed to end users. To see how this works, we will deploy a model that is *deliberately* bad. 
-
-Inside your SSH session on node1, run
-
-```bash
-# runs on node1
-mv ~/mlops-chi/train/food11_vit.pth ~/mlops-chi/train/food11.pth 
-```
-
-to replace our previous `food11.pth` with a different, larger model.
-
-Then, re-build the "fake" training container and re-start it, again **substituting your floating IP in place of `A.B.C.D`**:
-
-
-```bash
-# runs on node1
-docker stop gourmetgram-train
-docker build -t gourmetgram-train ~/mlops-chi/train/
-docker run --rm -d -p 9090:8000 \
-    -e MLFLOW_TRACKING_URI=http://A.B.C.D:8000/ \
-    -e GIT_PYTHON_REFRESH=quiet \
-    --name gourmetgram-train \
-    gourmetgram-train
-```
-
-and from the Argo Workflows UI, start a new training job.
 
 
 ## Delete infrastructure with Terraform
