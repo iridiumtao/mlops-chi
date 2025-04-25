@@ -143,7 +143,7 @@ Next, we need to deploy the GourmetGram application. Before we do, we need to bu
 ```bash
 # runs in Chameleon Jupyter environment
 cd /work/gourmetgram-iac/ansible
-ansible-playbook -i inventory.yml workflow_build_init.yml
+ansible-playbook -i inventory.yml argocd/workflow_build_init.yml
 ```
 :::
 
