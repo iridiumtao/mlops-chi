@@ -69,7 +69,7 @@ cd /work/gourmetgram-iac/ansible
 
 ### Verify connectivity
 
-First, we'll run a simple task to check connectivity with all hosts listed in the []`inventory.yml` file](https://github.com/teaching-on-testbeds/gourmetgram-iac/blob/main/ansible/inventory.yml):
+First, we'll run a simple task to check connectivity with all hosts listed in the [`inventory.yml` file](https://github.com/teaching-on-testbeds/gourmetgram-iac/blob/main/ansible/inventory.yml):
 
 ```
 all:
