@@ -993,7 +993,7 @@ To address this, we deploy our services using Helm, a tool that automates the cr
 and then when we add the application to ArgoCD, we pass the value that should be filled in there:
 
 ```
-        --helm-set-string minio.externalIP={{"{{ external_ip }}"}}
+        --helm-set-string minio.externalIP={{ "{{ external_ip }}" }}
 ```
 
 where Ansible finds out the value of `external_ip` for us in a separate task:
