@@ -985,24 +985,24 @@ Furthermore, Argo CD gets our service definitions from a Git repository, and we 
 
 To address this, we deploy our services using Helm, a tool that automates the creation, packaging, configuration, and deployment of Kubernetes applications.  With Helm, we can include something like this in our Kubernetes manifest/Helm chart:
 
-```
+<pre>
   externalIPs:
     - {{ .Values.minio.externalIP }}
-```
+</pre>
 
 and then when we add the application to ArgoCD, we pass the value that should be filled in there:
 
-```
+<pre>
         --helm-set-string minio.externalIP={{ external_ip }} 
-```
+</pre>
 
 where Ansible finds out the value of `external_ip` for us in a separate task:
 
-```
+<pre>
     - name: Detect external IP starting with 10.56
       set_fact:
         external_ip: "{{ ansible_all_ipv4_addresses | select('match', '^10\\.56\\..*') | list | first }}"
-```
+</pre>
 
 This general pattern:
 
