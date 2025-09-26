@@ -438,27 +438,39 @@ In the cell below, replace `CHI-XXXXXX` with the name of *your* Chameleon projec
 
 
 ```bash
+# runs in Chameleon Jupyter environment
 export OS_AUTH_URL=https://kvm.tacc.chameleoncloud.org:5000/v3
 export OS_PROJECT_NAME="CHI-XXXXXX"
 export OS_REGION_NAME="KVM@TACC"
 ```
 
 
-and in the cell below, replace **netID** with your own net ID *twice*, then run it to request a lease and print the UUID of the reserved "flavor":
+and in *BOTH* cells below, replace **netID** with your own net ID, then run to request a lease:
 
 
 ```bash
+# runs in Chameleon Jupyter environment
 # replace netID in this line
 openstack reservation lease create lease_mlops_netID \
   --start-date "$(date -u '+%Y-%m-%d %H:%M')" \
   --end-date "$(date -u -d '+8 hours' '+%Y-%m-%d %H:%M')" \
   --reservation "resource_type=flavor:instance,flavor_id=$(openstack flavor show m1.medium -f value -c id),amount=3"
+```
 
+
+
+and print the UUID of the reserved "flavor":
+
+
+
+```bash
+# runs in Chameleon Jupyter environment
 # also replace netID in this line
 flavor_id=$(openstack reservation lease show lease_mlops_netID -f json -c reservations \
       | jq -r '.reservations[0].flavor_id')
 echo $flavor_id
 ```
+
 
 
 Make a note of this ID - you will need it later, to provision resources.
