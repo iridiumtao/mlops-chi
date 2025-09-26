@@ -52,7 +52,7 @@ and in *BOTH* cells below, replace **netID** with your own net ID, then run to r
 # replace netID in this line
 openstack reservation lease create lease_mlops_netID \
   --start-date "$(date -u '+%Y-%m-%d %H:%M')" \
-  --end-date "$(date -u -d '+8 hours' '+%Y-%m-%d %H:%M')" \
+  --end-date "$(date -u -d '+2 days' '+%Y-%m-%d %H:%M')" \
   --reservation "resource_type=flavor:instance,flavor_id=$(openstack flavor show m1.medium -f value -c id),amount=3"
 ```
 :::

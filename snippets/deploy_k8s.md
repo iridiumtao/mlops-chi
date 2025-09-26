@@ -66,7 +66,7 @@ Then, we can run the Kubespray playbook! Inside the `ansible/k8s` subdirectory:
 * we have a "copy" of Kubespray as a submodule
 * and we have a minimal `inventory` directory, which describes the specific Kubespray configuration for our cluster
 
-The following cell will run for a long time, and install Kubernetes on the three-node cluster.
+The following cell will run for a long time - potentially for hours! - and install Kubernetes on the three-node cluster.
 
 When it is finished the "PLAY RECAP" should indicate that none of the tasks failed.
 

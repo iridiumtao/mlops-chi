@@ -22,6 +22,8 @@ Our experiment will use the following automated deployment and lifecycle managem
 
 **Note**: that we use Argo CD and Argo Workflows, which are tightly integrated with Kubernetes, because we are working in the context of a Kubernetes deployment. If our service was not deployed in Kubernetes (for example: it was deployed using "plain" Docker containers without a container orchestration framework), we would use other tools for managing the application and model lifecycle.
 
+The expected *hands-on* duration of this experiment is 5-6 hours. However, there is an unattended installation step in the middle (Kubernetes setup) that you may need to leave running for several hours. You should plan accordingly, to e.g. leave that stage running while you do something else, then return to finish.
+
 To run this experiment, you should have already created an account on Chameleon, and become part of a project. You should also have added your SSH key to the KVM@TACC site.
 
 
@@ -453,7 +455,7 @@ and in *BOTH* cells below, replace **netID** with your own net ID, then run to r
 # replace netID in this line
 openstack reservation lease create lease_mlops_netID \
   --start-date "$(date -u '+%Y-%m-%d %H:%M')" \
-  --end-date "$(date -u -d '+8 hours' '+%Y-%m-%d %H:%M')" \
+  --end-date "$(date -u -d '+2 days' '+%Y-%m-%d %H:%M')" \
   --reservation "resource_type=flavor:instance,flavor_id=$(openstack flavor show m1.medium -f value -c id),amount=3"
 ```
 
@@ -850,7 +852,7 @@ Then, we can run the Kubespray playbook! Inside the `ansible/k8s` subdirectory:
 * we have a "copy" of Kubespray as a submodule
 * and we have a minimal `inventory` directory, which describes the specific Kubespray configuration for our cluster
 
-The following cell will run for a long time, and install Kubernetes on the three-node cluster.
+The following cell will run for a long time - potentially for hours! - and install Kubernetes on the three-node cluster.
 
 When it is finished the "PLAY RECAP" should indicate that none of the tasks failed.
 
