@@ -419,6 +419,47 @@ Now that everything is set up, we are ready to provision our VM resources with T
 
 
 
+### Create a server lease
+
+
+
+While Terraform is able to provision most kinds of resources, it cannot create or manage a reservation - this feature of OpenStack is not used very widely, so the Terraform provider for OpenStack does not support it. We will separately create a lease for three server instances outside of Terraform.
+
+
+
+### Authentication
+
+In the cell below, replace `CHI-XXXXXX` with the name of *your* Chameleon project, then run the cell.
+
+
+```bash
+export OS_AUTH_URL=https://kvm.tacc.chameleoncloud.org:5000/v3
+export OS_PROJECT_NAME="CHI-XXXXXX"
+export OS_REGION_NAME="KVM@TACC"
+```
+
+
+and in the cell below, replace **netID** with your own net ID *twice*, then run it to request a lease and print the UUID of the reserved "flavor":
+
+
+```bash
+# replace netID in this line
+openstack reservation lease create lease_mlops_netID \
+  --start-date "$(date -u '+%Y-%m-%d %H:%M')" \
+  --end-date "$(date -u -d '+8 hours' '+%Y-%m-%d %H:%M')" \
+  --reservation "resource_type=flavor:instance,flavor_id=$(openstack flavor show m1.medium -f value -c id),amount=3"
+
+# also replace netID in this line
+flavor_id=$(openstack reservation lease show lease_mlops_netID -f json -c reservations \
+      | jq -r '.reservations[0].flavor_id')
+echo $flavor_id
+```
+
+
+Make a note of this ID - you will need it later, to provision resources.
+
+
+
 ### Preliminaries
 
 
@@ -522,7 +563,7 @@ Each item is in a **stanza** which has a block type, an identifier, and a body e
 The data sources, variables, and resources are used to define and manage infrastructure. 
 
 * **data** sources get existing infrastructure details from OpenStack about resources *not* managed by Terraform, e.g. available images or flavors. For example, here we had a data stanza of type "openstack_images_image_v2" with name "ubuntu". Terraform will get the details of this image from the OpenStack provider; then, when we use `data.openstack_images_image_v2.ubuntu.id` in defining the resource, it knows the ID of the image without us having to look it up. (Note that we can refer to another part of the Terraform file using `block_type.resource_type.name`, e.g. `data.openstack_images_image_v2.ubuntu` here.) You can look at our `data.tf` and see that we are asking Terraform to find out about the existing `sharednet1` network, its associated subnet, and several security groups.
-* **variables** let us define inputs and reuse the configuration across different environments. The value of variables can be passed in the command line arguments when we run a `terraform` command, or by defining environment variables that start with `TF_VAR`. In this example, there's a variable `instance_hostname` so that we can re-use this configuration to create a VM with any hostname - the variable is used inside the resource block with `name = "${var.instance_hostname}"`. If you look at our `variables.tf`, you can see that we'll use variables to define a suffix to include in all our resource names (e.g. your net ID), and the name of your key pair.
+* **variables** let us define inputs and reuse the configuration across different environments. The value of variables can be passed in the command line arguments when we run a `terraform` command, or by defining environment variables that start with `TF_VAR`. In this example, there's a variable `instance_hostname` so that we can re-use this configuration to create a VM with any hostname - the variable is used inside the resource block with `name = "${var.instance_hostname}"`. If you look at our `variables.tf`, you can see that we'll use variables to define a suffix to include in all our resource names (e.g. your net ID), the name of your key pair, and the reservation ID.
 * **resources** represent actual OpenStack components such as compute instances, networks, ports, floating IPs, and security groups. You can see the types of resources available in the [documentation](https://registry.terraform.io/providers/terraform-provider-openstack/openstack/latest/docs). Our resoures are defined in `main.tf`.
 
 
@@ -552,13 +593,14 @@ terraform init
 
 We need to set some [variables](https://developer.hashicorp.com/terraform/language/values/variables). In our Terraform configuration, we define a variable named `suffix` that we will substitute with our own net ID, and then we use that variable inside the hostname of instances and the names of networks and other resources in `main.tf`, e.g. we name our network <pre>private-subnet-mlops-<b>${var.suffix}</b></pre>. We'll also use a variable to specify a key pair to install.
 
-In the following cell, **replace `netID` with your actual net ID, and replace `id_rsa_chameleon` with the name of *your* personal key that you use to access Chameleon resources**.
+In the following cell, **replace `netID` with your actual net ID, replace `id_rsa_chameleon` with the name of *your* personal key that you use to access Chameleon resources, and replace the all-zero ID with the reservation ID you printed above.**.
 
 
 ```bash
 # runs in Chameleon Jupyter environment
 export TF_VAR_suffix=netID
 export TF_VAR_key=id_rsa_chameleon
+export TF_VAR_reservation=00000000-0000-0000-0000-000000000000
 ```
 
 
@@ -987,13 +1029,13 @@ To address this, we deploy our services using Helm, a tool that automates the cr
 
 ```
   externalIPs:
-  - {{ "{{ .Values.minio.externalIP }}" }}
+    - {{ .Values.minio.externalIP }}
 ```
 
 and then when we add the application to ArgoCD, we pass the value that should be filled in there:
 
 ```
-        --helm-set-string minio.externalIP={{ "{{ external_ip }}" }}
+        --helm-set-string minio.externalIP={{ external_ip }} 
 ```
 
 where Ansible finds out the value of `external_ip` for us in a separate task:
@@ -1001,7 +1043,7 @@ where Ansible finds out the value of `external_ip` for us in a separate task:
 ```
     - name: Detect external IP starting with 10.56
       set_fact:
-        external_ip: {{ "{{ ansible_all_ipv4_addresses | select('match', '^10\\.56\\..*') | list | first }}" }} 
+        external_ip: "{{ ansible_all_ipv4_addresses | select('match', '^10\\.56\\..*') | list | first }}"
 ```
 
 This general pattern:
