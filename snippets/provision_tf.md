@@ -274,7 +274,7 @@ terraform validate
 
 ::: {.cell .markdown}
 
-Then, let's preview the changes that Terraform will make to our infrastructure. In this stage, Terraform communicates with the cloud infrastructure provider to see what have *already* deployed and to 
+Then, let's preview the changes that Terraform will make to our infrastructure. In this stage, Terraform communicates with the cloud infrastructure provider to see what we have *already* deployed, and to determine what it needs to do to realize the requested configuration:
 
 :::
 

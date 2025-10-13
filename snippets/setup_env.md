@@ -347,10 +347,14 @@ It will also include:
 
 ```
 [ssh_connection]
-ssh_args = -o StrictHostKeyChecking=off -o UserKnownHostsFile=/dev/null -o ForwardAgent=yes -o ProxyCommand="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -W %h:%p cc@A.B.C.D"
+ssh_args = -o ControlMaster=auto -o ControlPersist=60s \
+           -o StrictHostKeyChecking=off -o UserKnownHostsFile=/dev/null \
+           -o ForwardAgent=yes \
+           -o ProxyCommand="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -W %h:%p cc@A.B.C.D"
+pipelining = True
 ```
 
-which says that when Ansible uses SSH to connect to the resources it is managing, it should "jump" through `A.B.C.D` and forward the keys from this environment, through `A.B.C.D`, to the final destination. (Also, we disable host key checking when using SSH.)
+which says that when Ansible uses SSH to connect to the resources it is managing, it should "jump" through `A.B.C.D` and forward the keys from this environment, through `A.B.C.D`, to the final destination. (Also, we disable host key checking when using SSH, and configure it to minimize the number of SSH sessions and the number of network operations wherever possible.)
 
 You will need to edit `A.B.C.D.` *after* you provision your resources, and replace it with the floating IP assigned to your experiment.
 
