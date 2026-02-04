@@ -1,0 +1,53 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+.env
+.env.*
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.lock.hcl
+crash.log
+override.tf
+override.tf.json
+*.tfvars
+!*.tfvars.example
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Jekyll
+_site/
+.sass-cache/
+.jekyll-cache/
+
+# Logs and cache
+*.log
+.cache/
+
+# Optional: uncomment if clouds.yaml contains secrets
+# clouds.yaml
+
+_internal_docs/
