@@ -39,8 +39,7 @@ AFTER:  schedule/manual → train → pytest eval → MLFlow → build → stagi
 - [ ] **AC2.2:** Staging test workflow sends request to deployed app
 - [ ] **AC2.3:** Test detects model incompatibility (e.g., wrong architecture, inference fails)
 - [ ] **AC2.4:** On failure: workflow triggers revert to previous model version
-- [ ] **AC2.5:** Tutorial demonstrates this failure scenario with screenshots
-- [ ] **AC2.6:** Tutorial explains what happens when model-app contract breaks
+- [ ] **AC2.5:** Tutorial explains what happens when model-app contract breaks
 
 **Success Criteria:** Students see real integration test catching model incompatibility, understand importance of API contracts between model and serving code
 
@@ -74,15 +73,15 @@ AFTER:  schedule/manual → train → pytest eval → MLFlow → build → stagi
 ---
 
 ### AC5: Automated Promotion to Canary
-**Requirement:** "Instead of 'At this stage, we could have another automatically-triggered workflow... But let's instead do this part manually', we will automatically promote to canary after running those tests in staging"
+**Requirement:** "We will automatically promote to canary after running those tests in staging", while still showing manual triggers as a baseline example.
 
-- [ ] **AC5.1:** Remove manual promotion section from `lifecycle_part_2.md`
-- [ ] **AC5.2:** `test-staging` workflow automatically triggers `promote-model` on all tests passing
-- [ ] **AC5.3:** Students observe automatic progression: staging → tests pass → canary
-- [ ] **AC5.4:** Tutorial explains conditional workflow execution
-- [ ] **AC5.5:** (Optional) Keep canary → production promotion manual for safety
+- [ ] **AC5.1:** Keep manual promotion section as a baseline example in `lifecycle_part_2.md`
+- [ ] **AC5.2:** Add automated path: `test-staging` workflow triggers `promote-model` on all tests passing
+- [ ] **AC5.3:** Students observe both paths: manual trigger vs. automated staging→canary
+- [ ] **AC5.4:** Tutorial explains conditional workflow execution (pass → promote, fail → revert)
+- [ ] **AC5.5:** Keep canary → production promotion manual for safety (no change required by professor)
 
-**Success Criteria:** Pipeline is fully automated from training through canary deployment, students see end-to-end automation
+**Success Criteria:** Students see manual and automated promotion patterns; staging tests gate automated canary promotion
 
 ---
 
@@ -131,7 +130,7 @@ AFTER:  schedule/manual → train → pytest eval → MLFlow → build → stagi
 **Core Changes:**
 - [ ] All 8 acceptance criteria groups (AC1-AC8) are met
 - [ ] Tutorial narrative is updated to explain all new concepts
-- [ ] Students can observe: pytest, integration tests, resource tests, load tests, branching, scheduled triggers
+- [ ] Students can observe: manual trigger, scheduled trigger, branching, pytest, integration tests, resource tests, load tests
 - [ ] Students understand (conceptually): GitHub triggers
 - [ ] Failure scenarios are demonstrated, not just happy path
 - [ ] All changes work on Chameleon infrastructure
