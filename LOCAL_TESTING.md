@@ -75,11 +75,35 @@ brew install docker  # Docker Desktop for Mac
 # Install Argo CLI (for workflow linting)
 brew install argo
 
-# Python tools
-pip3 install pytest pytest-asyncio pytest-mock mlflow torch torchvision flask
+# Install UV for local Python workflows
+brew install uv
 
 # Optional: Local Kubernetes (if time permits)
 brew install minikube kubectl
+```
+
+### UV Quick Reference (Local Only, for AI + humans)
+
+Use UV for local Python commands in this document. Do not change production workflows.
+
+```bash
+# Help / sanity check
+uv --help
+
+# Run any command in a UV-managed environment
+uv run <command>
+
+# Use a specific Python version
+uv run --python 3.11 <command>
+
+# Add one-off dependencies for a command
+uv run --with pytest --with pyyaml <command>
+
+# If a project has pyproject.toml, install deps with:
+uv sync
+
+# Install dependencies (legacy method, should be used if pyproject.toml is not present)
+uv pip install -r requirements.txt
 ```
 
 ### Directory Structure
@@ -111,13 +135,13 @@ argo lint workflows/test-staging.yaml
 argo lint workflows/cron-train.yaml
 argo lint workflows/build-container-image.yaml
 
-# Python syntax check
+# Python syntax check (UV-managed, local only)
 cd ~/mlops-chi
-python3 -m py_compile train/flow.py
-python3 -m py_compile train/tests/*.py
+uv run --python 3.11 python -m py_compile train/flow.py
+uv run --python 3.11 python -m py_compile train/tests/*.py
 
 cd ~/gourmetgram
-python3 -m py_compile app.py
+uv run --python 3.11 python -m py_compile app.py
 ```
 
 **Expected output:** All files pass without errors
@@ -131,16 +155,11 @@ python3 -m py_compile app.py
 ```bash
 cd ~/mlops-chi/train
 
-# Create test environment
-python3 -m venv test-env
-source test-env/bin/activate
-pip install -r requirements-test.txt  # We'll create this
-
-# Run pytest tests
-pytest tests/ -v
+# Run pytest tests (UV-managed)
+uv run --python 3.11 --with pytest pytest tests/ -v
 
 # Test scenario parameter handling
-pytest tests/test_scenarios.py -v
+uv run --python 3.11 --with pytest pytest tests/test_scenarios.py -v
 
 # Expected: All tests pass
 # - test_model_accuracy.py: should randomly pass/fail
@@ -153,14 +172,9 @@ pytest tests/test_scenarios.py -v
 ```bash
 cd ~/gourmetgram
 
-# Create test environment
-python3 -m venv test-env
-source test-env/bin/activate
-pip install -r requirements.txt
-pip install pytest
-
-# Create tests/test_app.py (we'll write this)
-pytest tests/test_app.py -v
+# Run pytest tests (UV-managed)
+# Add extra --with deps if pytest reports missing packages
+uv run --python 3.11 --with pytest pytest tests/test_app.py -v
 
 # Expected tests:
 # - test_valid_model_loads: MobileNetV2 loads successfully
@@ -252,7 +266,7 @@ Create a test script to validate workflow YAML rendering:
 cd ~/gourmetgram-iac/workflows
 
 # Create test_workflows.py
-python3 test_workflows.py
+uv run --python 3.11 --with pyyaml python test_workflows.py
 
 # This script will:
 # 1. Load each YAML file
@@ -410,7 +424,7 @@ When deployed to Chameleon, test in this order (fastest to slowest):
 # Essential
 brew install yamllint
 brew install argo
-pip3 install pytest mlflow torch flask pyyaml
+brew install uv
 
 # Nice to have
 brew install minikube  # For local K8s testing if time permits
