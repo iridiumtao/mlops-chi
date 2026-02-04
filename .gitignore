@@ -50,4 +50,5 @@ _site/
 # Optional: uncomment if clouds.yaml contains secrets
 # clouds.yaml
 
-_internal_docs/
+CLAUDE.md
+.claude/

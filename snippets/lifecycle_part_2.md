@@ -4,7 +4,7 @@
 
 Once we have a container image, the progression through the model/application lifecycle continues as the new version is promoted through different environments:
 
-* **Staging**: The container image is deployed in a staging environment that mimics the "production" service but without live users. In this staging environmenmt, we can perform integration tests against the service and also load tests to evaluate the inference performance of the system.
+* **Staging**: The container image is deployed in a staging environment that mimics the "production" service but without live users. In this staging environment, we can perform integration tests against the service and also load tests to evaluate the inference performance of the system.
 * **Canary** (or blue/green, or other "preliminary" live environment): From the staging environment, the service can be promoted to a canary or other preliminary environment, where it gets requests from a small fraction of live users. In this environment, we are closely monitoring the service, its predictions, and the infrastructure for any signs of problems. 
 * **Production**: Finally, after a thorough offline and online evaluation, we may promote the model to the live production environment, where it serves most users. We will continue monitoring the system for signs of degradation or poor performance.
 
