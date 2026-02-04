@@ -9,7 +9,7 @@ RUN pip install --no-cache-dir \
 
 RUN pip install --no-cache-dir \
     prefect \
-    mlflow==2.20.2 \
+    mlflow==3.9.0 \
     fastapi \
     uvicorn
 
