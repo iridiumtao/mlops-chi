@@ -17,6 +17,9 @@ RUN pip install --no-cache-dir \
 # Copy application files
 COPY flow.py /app/flow.py
 COPY food11.pth /app/food11.pth
+COPY bad_model.pth /app/bad_model.pth
+COPY oversized_model.pth /app/oversized_model.pth
+COPY oversized_model.py /app/oversized_model.py
 COPY tests/ /app/tests/
 
 # Expose port for FastAPI
