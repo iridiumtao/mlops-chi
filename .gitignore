@@ -1,5 +1,6 @@
-# Ignore oversized model
+# Ignore oversized model and bad model (local testing only)
 train/oversized_model.pth
+train/bad_model.pth
 
 # macOS
 .DS_Store
