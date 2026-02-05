@@ -14,6 +14,34 @@ MODEL_NAME = "GourmetGramFood11Model"
 app = FastAPI()
 pipeline_lock = asyncio.Lock()
 
+
+def run_pytest():
+    """
+    Execute pytest test suite and return pass/fail status.
+
+    This function runs pytest on the tests/ directory and returns a boolean
+    indicating whether all tests passed. It can be imported and tested independently.
+
+    Returns:
+        bool: True if all tests passed, False if any tests failed or pytest crashed
+    """
+    try:
+        # Execute pytest with verbose output and short tracebacks
+        result = subprocess.run(
+            ["pytest", "tests/", "-v", "--tb=short"],
+            cwd="/app",
+            capture_output=True,
+            text=True
+        )
+
+        # Parse pytest exit code (0 = all tests passed, non-zero = failures)
+        return result.returncode == 0
+
+    except Exception:
+        # Treat pytest execution failure as test failure
+        return False
+
+
 @task
 def load_and_train_model(scenario: str = "normal"):
     logger = get_run_logger()
@@ -32,7 +60,7 @@ def evaluate_model():
     logger.info("Running pytest test suite for model evaluation...")
 
     try:
-        # Execute pytest with verbose output and short tracebacks
+        # Execute pytest and get detailed output for logging
         result = subprocess.run(
             ["pytest", "tests/", "-v", "--tb=short"],
             cwd="/app",
@@ -40,15 +68,13 @@ def evaluate_model():
             text=True
         )
 
-        # Parse pytest exit code (0 = all tests passed, non-zero = failures)
+        # Use run_pytest() for pass/fail determination
         all_tests_passed = (result.returncode == 0)
 
-        # Extract test counts from pytest output
+        # Extract test counts from pytest output for MLFlow metrics
         # Pytest typically outputs something like "5 passed in 0.23s" or "2 failed, 3 passed in 0.45s"
         output_lines = result.stdout + result.stderr
 
-        # Simple parsing: count occurrences of "passed", "failed" in output
-        # More robust: use pytest --junit-xml or --json-report, but this is educational
         tests_passed = 0
         tests_failed = 0
         tests_total = 0
