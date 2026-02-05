@@ -7,6 +7,7 @@ import asyncio
 from fastapi import FastAPI, HTTPException
 from prefect import flow, task, get_run_logger
 from mlflow.tracking import MlflowClient
+import oversized_model
 
 MODEL_PATH = "food11.pth"
 MODEL_NAME = "GourmetGramFood11Model"
@@ -45,10 +46,25 @@ def run_pytest():
 @task
 def load_and_train_model(scenario: str = "normal"):
     logger = get_run_logger()
-    logger.info(f"Pretending to train with scenario: {scenario}")
-    logger.info("Actually just loading a model...")
+    logger.info(f"Loading model with scenario: {scenario}")
+
+    # Map scenario to model file
+    scenario_to_model = {
+        "normal": "food11.pth",
+        "bad-architecture": "bad_model.pth",
+        "oversized": "oversized_model.pth"
+    }
+
+    # Handle invalid scenarios with warning and default to normal
+    if scenario not in scenario_to_model:
+        logger.warning(f"Unknown scenario '{scenario}'. Defaulting to 'normal'.")
+        scenario = "normal"
+
+    model_path = scenario_to_model[scenario]
+    logger.info(f"Loading model from {model_path}...")
     time.sleep(10)
-    model = torch.load(MODEL_PATH, weights_only=False, map_location=torch.device('cpu'))
+
+    model = torch.load(model_path, weights_only=False, map_location=torch.device('cpu'))
 
     logger.info("Logging model to MLflow...")
     mlflow.pytorch.log_model(model, artifact_path="model")
