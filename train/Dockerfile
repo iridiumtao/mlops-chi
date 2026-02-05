@@ -10,8 +10,6 @@ RUN pip install --no-cache-dir \
 RUN pip install --no-cache-dir \
     prefect \
     mlflow==2.20.2 \
-    fastapi \
-    uvicorn \
     pytest
 
 # Copy application files
@@ -24,8 +22,5 @@ COPY tests/ /app/tests/
 # Generate failure scenario models during build
 RUN python /app/create_failure_models.py
 
-# Expose port for FastAPI
-EXPOSE 8000
-
-# Start FastAPI server
+# Run training pipeline
 ENTRYPOINT ["python", "flow.py"]

@@ -17,76 +17,49 @@ We will start with the first stage, where:
 
 ::: {.cell .markdown}
 
-### Set up model training environment
+### The training environment
 
-We are going to assume that model training does *not* run in Kubernetes - it may run on a node that is even outside of our cluster, like a bare metal GPU node on Chameleon.  (In the diagram above, the dark-gray settings are not in Kubernetes).
+In this lab, model training runs as a **Kubernetes pod** managed by Argo Workflows — it does not require a separate container or a manually-started server. The training container image (built from `train/` in the mlops-chi repository) is pushed to the local cluster registry as part of the initial setup, and Argo launches it as a pod when training is triggered.
 
-In this example, the "training" environment will be a Docker container on one of our VM instances, because that is the infrastructure that we currently have deployed - but it could just as easily be on an entirely separate instance.
-
-Let's set up that Docker container now. First, SSH to the node1 instance. Then, run
-
-```bash
-# runs on node1
-git clone https://github.com/teaching-on-testbeds/mlops-chi
-docker build -t gourmetgram-train ~/mlops-chi/train/
-```
-
-to build the container image.
-
-The "training" environment will send a model to the MLFlow model registry, which is running on Kubernetes, so it needs to know its address. In this case, it happens to be on the same host, but in general it doesn't need to be. 
-
-Start the "training" container with the command below, but in place of `A.B.C.D`, **substitute the floating IP address associated with your Kubernetes deployment**.
-
-```bash
-# runs on node1
-docker run --rm -d -p 9090:8000 \
-    -e MLFLOW_TRACKING_URI=http://A.B.C.D:8000/ \
-    -e GIT_PYTHON_REFRESH=quiet \
-    --name gourmetgram-train \
-    gourmetgram-train
-```
-
-(we map port 8000 in the training container to port 8999 on the host, because we are already hosting the MLFlow model registry on port 8000.)
-
-Run
-
-```bash
-# runs on node1
-docker logs gourmetgram-train --follow
-```
-
-and wait until you see
-
-```
-INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
-```
-
-:::
-
-::: {.cell .markdown}
-
-Now, our training job is ready to run! We have set it up so that training is triggered if a request is sent to the HTTP endpoint
-
-```
-http://E.F.G.H:9090/trigger-training
-```
-
-(where `E.F.G.H` is the address of the training node. In this example, it happens to be the same address as the Kubernetes cluster head node, just because we are running it on the same node.)
+Because the training pod runs inside the same cluster as MLflow, it can reach the model registry directly over the cluster-internal network (`mlflow.gourmetgram-platform.svc.cluster.local:8000`). No floating IP or port mapping is needed.
 
 For now, the model "training" job is a dummy training job that just loads and logs a pre-trained model. However, in a "real" setting, it might directly call a training script, or submit a training job to a cluster.
 
+The training pipeline supports different **scenarios** for testing failure cases:
+
 ```python
 @task
-def load_and_train_model():
+def load_and_train_model(scenario: str = "normal"):
     logger = get_run_logger()
-    logger.info("Pretending to train, actually just loading a model...")
+    logger.info(f"Loading model with scenario: {scenario}")
+
+    # Map scenario to model file
+    scenario_to_model = {
+        "normal": "food11.pth",
+        "bad-architecture": "bad_model.pth",
+        "oversized": "oversized_model.pth"
+    }
+
+    model_path = scenario_to_model.get(scenario, "food11.pth")
+    logger.info(f"Loading model from {model_path}...")
     time.sleep(10)
-    model = torch.load(MODEL_PATH, weights_only=False, map_location=torch.device('cpu'))
+
+    model = torch.load(model_path, weights_only=False, map_location=torch.device('cpu'))
 
     logger.info("Logging model to MLflow...")
     mlflow.pytorch.log_model(model, artifact_path="model")
     return model
 ```
+
+These scenarios allow us to test how the pipeline handles:
+- **normal**: A valid MobileNetV2 model that works correctly
+- **bad-architecture**: A model with incompatible architecture (will fail in staging tests)
+- **oversized**: A model that exceeds Kubernetes resource limits (will fail deployment)
+
+:::
+
+
+::: {.cell .markdown}
 
 ### Evaluating models with pytest
 
@@ -105,28 +78,49 @@ def evaluate_model():
     logger = get_run_logger()
     logger.info("Running pytest test suite for model evaluation...")
 
-    # Execute pytest and capture results
-    result = subprocess.run(
-        ["pytest", "tests/", "-v", "--tb=short"],
-        cwd="/app",
-        capture_output=True,
-        text=True
-    )
+    try:
+        # Execute pytest and capture results
+        result = subprocess.run(
+            ["pytest", "tests/", "-v", "--tb=short"],
+            cwd="/app",
+            capture_output=True,
+            text=True
+        )
 
-    all_tests_passed = (result.returncode == 0)
+        all_tests_passed = (result.returncode == 0)
 
-    # Log test counts to MLFlow
-    mlflow.log_metric("tests_passed", tests_passed)
-    mlflow.log_metric("tests_failed", tests_failed)
-    mlflow.log_metric("tests_total", tests_total)
+        # Extract test counts from pytest output
+        output_lines = result.stdout + result.stderr
+        tests_passed = 0
+        tests_failed = 0
 
-    return all_tests_passed
+        import re
+        passed_match = re.search(r'(\d+) passed', output_lines)
+        failed_match = re.search(r'(\d+) failed', output_lines)
+
+        if passed_match:
+            tests_passed = int(passed_match.group(1))
+        if failed_match:
+            tests_failed = int(failed_match.group(1))
+
+        # Log metrics to MLFlow
+        mlflow.log_metric("tests_passed", tests_passed)
+        mlflow.log_metric("tests_failed", tests_failed)
+        mlflow.log_metric("tests_total", tests_passed + tests_failed)
+
+        return all_tests_passed
+
+    except Exception as e:
+        logger.error(f"Failed to execute pytest: {e}")
+        return False
 ```
 
 The tests themselves live in a `tests/` directory. For this tutorial, we use "dummy" tests that simulate realistic evaluation behavior:
 
 ```python
 # tests/test_model_accuracy.py
+import random
+
 def test_model_accuracy():
     """Simulate model accuracy test with probabilistic results"""
     # 70% chance of high accuracy (0.85), 30% chance of lower accuracy (0.75)
@@ -142,6 +136,7 @@ In a real setting, these tests would:
 
 The key pattern here is: **integrate established testing frameworks into your MLOps pipeline**, rather than reinventing evaluation logic.
 
+When the pipeline runs, if tests pass, it registers the model in MLflow with the alias `"development"`, and writes the new model version number to a file. Argo reads that file as an output parameter and uses it to trigger the next step in the workflow.
 
 :::
 
@@ -150,7 +145,7 @@ The key pattern here is: **integrate established testing frameworks into your ML
 
 ### Run a training job
 
-We have already set up an Argo workflow template to trigger the training job on the external endpoint. If you have the Argo Workflows dashboard open, you can see it by:
+We have already set up an Argo workflow template to run the training job as a pod inside the cluster. If you have the Argo Workflows dashboard open, you can see it by:
 
 * clicking on "Workflow Templates" in the left side menu (mouse over each icon to see what it is)
 * then clicking on the "train-model" template
@@ -170,58 +165,75 @@ metadata:
   name: train-model
 ```
 
-then, some information about the name of the first "node" in the graph (`training-and-build` in this example), and any parameters it takes as input (here, `endpoint-ip`):
+then, the name of the first "node" in the graph (`training-and-build` in this example). Note that this workflow takes no input parameters — it does not need any, because everything it needs (the training image, the MLflow address) is already known inside the cluster:
 
 ```yaml
 spec:
   entrypoint: training-and-build
-  arguments:
-    parameters:
-    - name: endpoint-ip
 ```
 
-Now, we have a sequence of nodes. 
+Now, we have a sequence of steps.
 
 ```yaml
   templates:
   - name: training-and-build
     steps:
-      - - name: trigger-training-endpoint
-          template: call-endpoint
-          arguments:
-            parameters:
-            - name: endpoint-ip
-              value: "{{workflow.parameters.endpoint-ip}}"
+      - - name: run-training
+          template: run-training
       - - name: build-container
           template: trigger-build
           arguments:
             parameters:
             - name: model-version
-              value: "{{steps.trigger-training-endpoint.outputs.result}}"
-          when: "{{steps.trigger-training-endpoint.outputs.result}} != ''"
+              value: "{{steps.run-training.outputs.parameters.model-version}}"
+          when: "{{steps.run-training.outputs.parameters.model-version}} != ''"
 ```
 
-The `training-and-build` node runs two steps: a  `trigger-training-endpoint` step using the `call-endpoint` template, that takes as input an `endpoint-ip`, and then a `build-container` step  using the `trigger-build` template, that takes as input a `model-version` (which comes from the `trigger-training-endpoint` step!). The `build-container` step only runs if there is a result (the model version!) saved in `steps.trigger-training-endpoint.outputs.result`.
+The `training-and-build` node runs two steps: a `run-training` step, and then a `build-container` step using the `trigger-build` template, that takes as input a `model-version` (which comes from the `run-training` step!). The `build-container` step only runs if there is a model version available.
 
 
-Then, we can see the `call-endpoint` template, which creates a pod with the specified container image and runs a command in it:
+Then, we can see the `run-training` template, which runs the training as a Kubernetes pod:
 
 ```yaml
-  - name: call-endpoint
-    inputs:
+  - name: run-training
+    outputs:
       parameters:
-      - name: endpoint-ip
-    script:
-      image: alpine:3.18
-      command: [sh]
-      source: |
-        apk add --no-cache curl jq > /dev/null
-        RESPONSE=$(curl -s -X POST http://{{inputs.parameters.endpoint-ip}}:9090/trigger-training)
-        VERSION=$(echo $RESPONSE | jq -r '.new_model_version // empty')
-        echo -n $VERSION
+      - name: model-version
+        valueFrom:
+          path: /tmp/model_version
+    container:
+      image: registry.kube-system.svc.cluster.local:5000/gourmetgram-train:latest
+      command: [python, flow.py]
+      env:
+        - name: MLFLOW_TRACKING_URI
+          value: "http://mlflow.gourmetgram-platform.svc.cluster.local:8000"
 ```
 
-and the `trigger-build` template, which creates an Argo workflow using the `build-container-image` Argo Workflow template!
+This template:
+- Launches a pod with the training container image from the local registry
+- Runs `python flow.py` directly (no HTTP endpoint needed)
+- Sets the MLFlow tracking URI to reach the MLFlow service inside the cluster
+- Captures the model version from `/tmp/model_version` as an output parameter
+
+The training script writes the model version to `/tmp/model_version` after successful registration:
+
+```python
+if __name__ == "__main__":
+    # Support command-line argument for scenario (default: normal)
+    scenario = sys.argv[1] if len(sys.argv) > 1 else "normal"
+    version = ml_pipeline_flow(scenario)
+    
+    # Write model version for workflow to read
+    with open("/tmp/model_version", "w") as f:
+        f.write("" if version is None else str(version))
+```
+
+:::
+
+
+::: {.cell .markdown}
+
+Finally, we can see the `trigger-build` template:
 
 ```yaml
   - name: trigger-build
@@ -244,263 +256,110 @@ and the `trigger-build` template, which creates an Argo workflow using the `buil
               value: "{{inputs.parameters.model-version}}"
 ```
 
-Now that we understand what is included in the workflow, let's trigger it.
+This template uses a resource with `action: create` to trigger a new workflow - our "build-container-image" workflow! (You'll see that one shortly.)
+
+Note that we pass along the `model-version` parameter from the training step to the container build step, so that the container build step knows which model version to use.
+
+:::
+
+::: {.cell .markdown}
+
+Now, we can submit this workflow! In Argo:
+
+* Click on "Workflow Templates" in the left sidebar
+* Click on "train-model"
+* Click "Submit" in the top right
+* Click "Submit" again (we don't need to modify any parameters)
+
+This will start the training workflow.
 
 :::
 
 
 ::: {.cell .markdown}
 
-### Understanding workflow triggers
+In Argo, you can watch the workflow progress in real time:
 
-Before we manually trigger a training job, let's understand the different ways a workflow can be started. In production MLOps pipelines, you'll encounter three main trigger types:
+* Click on "Workflows" in the left side menu
+* Then find the workflow whose name starts with "train-model"
+* Click on it to open the detail page
 
-**1. Manual triggers** - A human clicks "Submit" in the Argo UI or runs a command. Use this for:
-* Initial testing and debugging
-* One-off model retraining after code changes
-* Emergency retraining after detecting model degradation
+You can click on any step to see its logs, inputs, outputs, etc. For example, click on the "run-training" node to see the training logs. You should see pytest output showing which tests passed or failed.
 
-**2. Scheduled triggers** - A workflow runs automatically on a time schedule. Use this for:
-* Nightly or weekly model retraining to incorporate new data
-* Regular model validation checks
-* Periodic performance benchmarking
+Wait for it to finish. (It may take 10-15 minutes for the entire pipeline to complete, including the container build.)
 
-**3. Event-driven triggers** - A workflow starts in response to an event (e.g., new code pushed to GitHub, new data arrives). Use this for:
-* Continuous training when new training data is available
-* Retraining when application code changes
-* Integration with CI/CD pipelines
+:::
 
-For this tutorial, we'll use manual triggers to understand the workflow, then we'll set up a scheduled trigger as an example.
+::: {.cell .markdown}
+
+### Check the model registry
+
+After training completes successfully (and tests pass), you should see a new model version registered in MLflow. Open the MLFlow UI at `http://A.B.C.D:8000` (substituting your floating IP address).
+
+* Click on "Models" in the top menu
+* Click on "GourmetGramFood11Model"
+* You should see a new version with the alias "development"
+
+Take a screenshot for your reference.
 
 :::
 
 
 ::: {.cell .markdown}
 
-### Triggering training manually
+### Triggers in Argo Workflows
 
-Let's trigger our first training job manually. In the Argo Workflows dashboard:
+In the example above, we manually triggered the training workflow. However, in a real MLOps system, training might be triggered automatically by various events:
 
-* click "Submit"
-* in the space for specifying the "endpoint-ip" parameter, specify the floating IP address of your training node. (In this example, as we said, it will be the same address as the Kubernetes cluster head node.)
+#### Time-based triggers (CronWorkflow)
 
-In the logs from the "gourmetgram-train" container, you should see that the "dummy" training job is triggered. This is step 2 in the diagram above.
-
-You can see the progress of the workflow in the Argo Workflows UI. Take a screenshot for later reference.
-
-Once it is finished, check the MLFlow dashboard at
-
-```
-http://A.B.C.D:8000
-```
-
-(using your own floating IP), and click on "Models". Since the model training is successful, and it passes an initial "evaluation", you should see a registered "GourmetGramFood11Model" from our training job. (This is step 2 in the diagram above.)
-
-You may trigger the training job several times. Note that the model version number is updated each time, and the most recent one has the alias "development".
-
-:::
-
-
-::: {.cell .markdown}
-
-### Run a container build job
-
-Now that we have a new registered model, we need a new container build! (Steps 5, 6, 7 in the diagram above.)
-
-This is triggered *automatically* when a new model version is returned from a training job.  In Argo Workflows,
-
-* click on "Workflows"  in the left side menu (mouse over each icon to see what it is)
-* and note that a "build-container-image" workflow follows each "train-model" workflow.
-
-Click on a "build-container-image" workflow to see its steps, and take a screenshot for later reference.
-
-:::
-
-
-::: {.cell .markdown}
-
-### Setting up scheduled training with CronWorkflow
-
-While manual triggers are great for testing, production systems often need automatic retraining on a schedule. Argo Workflows provides **CronWorkflow** for this purpose - it's like a cron job, but for workflows.
-
-Here's an example CronWorkflow that triggers model training every night at 2 AM:
+You can schedule training to run periodically using Argo's `CronWorkflow` resource:
 
 ```yaml
 apiVersion: argoproj.io/v1alpha1
 kind: CronWorkflow
 metadata:
-  name: cron-train
+  name: train-model-cron
 spec:
-  # Cron schedule: Run daily at 2:00 AM UTC
-  # Format: minute hour day-of-month month day-of-week
-  schedule: "0 2 * * *"
-
-  timezone: "UTC"
-
-  # Keep last 3 completed workflows for debugging
-  successfulJobsHistoryLimit: 3
-  failedJobsHistoryLimit: 3
-
+  schedule: "0 2 * * *"  # Run at 2 AM every day
   workflowSpec:
-    entrypoint: scheduled-training
-    arguments:
-      parameters:
-      - name: endpoint-ip
-        value: "gourmetgram-train.gourmetgram-platform.svc.cluster.local"
-
-    templates:
-    - name: scheduled-training
-      steps:
-        - - name: trigger-train-workflow
-            template: trigger-train
-
-    - name: trigger-train
-      resource:
-        action: create
-        manifest: |
-          apiVersion: argoproj.io/v1alpha1
-          kind: Workflow
-          metadata:
-            generateName: train-model-
-          spec:
-            workflowTemplateRef:
-              name: train-model
+    workflowTemplateRef:
+      name: train-model
 ```
 
-**Understanding the cron schedule:**
+This is useful for:
+- Retraining on a fixed schedule (daily, weekly)
+- Training with fresh data that arrives periodically
+- Regular model refresh to prevent drift
 
-The `schedule: "0 2 * * *"` field uses standard cron syntax:
+#### Event-based triggers
 
-```
-┌───────────── minute (0 - 59)
-│ ┌───────────── hour (0 - 23)
-│ │ ┌───────────── day of month (1 - 31)
-│ │ │ ┌───────────── month (1 - 12)
-│ │ │ │ ┌───────────── day of week (0 - 6, Sunday = 0)
-│ │ │ │ │
-│ │ │ │ │
-* * * * *
-```
+In production systems, training might also be triggered by:
+- **GitHub webhooks**: When new training code is pushed
+- **Data pipeline completion**: When new labeled data is available
+- **Model monitoring alerts**: When model performance degrades
 
-**Common schedule examples:**
+For example, you could use Argo Events to listen for GitHub webhooks and trigger training workflows automatically. We won't implement this in the lab (to avoid modifying GitHub settings), but the pattern would be:
 
-* `"0 2 * * *"` - Daily at 2:00 AM
-* `"0 */6 * * *"` - Every 6 hours
-* `"0 0 * * 0"` - Weekly on Sunday at midnight
-* `"0 0 1 * *"` - Monthly on the 1st at midnight
-* `"*/30 * * * *"` - Every 30 minutes
+1. Set up an Argo EventSource for GitHub webhooks
+2. Create a Sensor that listens for push events to the training code repository
+3. Trigger the train-model workflow when a push event occurs
 
-**When to use scheduled training:**
-
-* **Daily retraining**: When you have fresh data arriving daily (e.g., user behavior logs)
-* **Weekly updates**: For models where data changes more slowly (e.g., product catalog changes)
-* **Off-peak hours**: Schedule training during low-traffic periods to reduce resource contention
-* **Continuous improvement**: Regular retraining can help models stay current with changing patterns
-
-To deploy this CronWorkflow, you would apply it to your cluster:
-
-```bash
-kubectl apply -f cron-train.yaml
-```
-
-You can view active CronWorkflows in the Argo UI under "Cron Workflows" in the left menu. Each time the schedule triggers, a new Workflow instance is created.
+This enables true continuous training where code changes immediately flow into production.
 
 :::
 
-
 ::: {.cell .markdown}
 
-### GitHub webhook triggers (conceptual)
+### Next: Container build
 
-Another powerful trigger mechanism is **event-driven training** using GitHub webhooks. While we won't implement this in the tutorial (to avoid complications with GitHub configuration), it's important to understand the pattern.
+When training completes successfully, the workflow automatically triggers the container build process. In the next section, we'll examine how the container build workflow:
 
-**The concept:**
+1. Clones the application repository
+2. Downloads the model from MLflow
+3. Builds a new container image with the updated model
+4. Deploys to the staging environment
 
-When developers push new training code to the main branch, you might want to automatically retrain the model with the updated code. Here's how it would work:
-
-1. **GitHub webhook**: Configure your repository to send HTTP POST requests to a specific endpoint whenever code is pushed
-2. **Argo Events**: Deploy an EventSource that listens for GitHub webhook payloads
-3. **Sensor**: Process the webhook payload and trigger the training workflow
-4. **Workflow execution**: The same `train-model` workflow we've been using runs automatically
-
-**Example EventSource (for reference only):**
-
-```yaml
-apiVersion: argoproj.io/v1alpha1
-kind: EventSource
-metadata:
-  name: github-eventsource
-spec:
-  github:
-    training-code:
-      repositories:
-        - owner: teaching-on-testbeds
-          names:
-            - mlops-chi
-      webhook:
-        endpoint: /push
-        port: "12000"
-        method: POST
-      events:
-        - push
-      apiToken:
-        name: github-access
-        key: token
-```
-
-**Example Sensor (for reference only):**
-
-```yaml
-apiVersion: argoproj.io/v1alpha1
-kind: Sensor
-metadata:
-  name: github-workflow-trigger
-spec:
-  dependencies:
-    - name: github-push
-      eventSourceName: github-eventsource
-      eventName: training-code
-      filters:
-        data:
-          - path: body.ref
-            type: string
-            value:
-              - refs/heads/main
-  triggers:
-    - template:
-        name: trigger-training
-        argoWorkflow:
-          operation: submit
-          source:
-            resource:
-              apiVersion: argoproj.io/v1alpha1
-              kind: Workflow
-              metadata:
-                generateName: train-model-
-              spec:
-                workflowTemplateRef:
-                  name: train-model
-```
-
-**Real-world use cases:**
-
-* **Code-driven retraining**: When training scripts are updated, automatically retrain with new logic
-* **Model architecture changes**: When model code changes, trigger full pipeline from training to deployment
-* **Configuration updates**: When hyperparameters are changed in config files, start a new training run
-* **CI/CD integration**: Make model training part of your continuous integration pipeline
-
-**Why we're not implementing this:**
-
-Setting up GitHub webhooks requires:
-* Exposing your cluster to the internet (security considerations)
-* Configuring GitHub repository webhooks (requires admin access)
-* Managing webhook secrets and authentication
-* Handling webhook payload validation
-
-These are advanced topics beyond the scope of this tutorial. However, understanding the concept is valuable - in production MLOps environments, event-driven workflows are common.
-
-**Learn more:**
-
-If you want to explore this further, check out the [Argo Events documentation](https://argoproj.github.io/argo-events/).
+This completes Part 1 of the model lifecycle!
 
 :::

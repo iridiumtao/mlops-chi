@@ -1,19 +1,15 @@
 import os
+import sys
 import time
 import subprocess
 import torch
 import mlflow
-import asyncio
-from fastapi import FastAPI, HTTPException
 from prefect import flow, task, get_run_logger
 from mlflow.tracking import MlflowClient
 import oversized_model
 
 MODEL_PATH = "food11.pth"
 MODEL_NAME = "GourmetGramFood11Model"
-
-app = FastAPI()
-pipeline_lock = asyncio.Lock()
 
 
 def run_pytest():
@@ -159,19 +155,15 @@ def ml_pipeline_flow(scenario: str = "normal"):
         version = register_model_if_passed(passed)
         return version
 
-@app.post("/trigger-training")
-async def trigger_training(scenario: str = "normal"):
-    if pipeline_lock.locked():
-        raise HTTPException(status_code=423, detail="Pipeline is already running. Please wait.")
-
-    async with pipeline_lock:
-        loop = asyncio.get_event_loop()
-        version = await loop.run_in_executor(None, ml_pipeline_flow, scenario)
-        if version:
-            return {"status": "Pipeline executed successfully", "new_model_version": version}
-        else:
-            return {"status": "Pipeline executed, but no new model registered"}
-
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # Support command-line argument for scenario (default: normal)
+    scenario = sys.argv[1] if len(sys.argv) > 1 else "normal"
+    print(f"Starting training pipeline with scenario: {scenario}")
+    
+    version = ml_pipeline_flow(scenario)
+    
+    # Write model version to file for workflow to read
+    with open("/tmp/model_version", "w") as f:
+        f.write("" if version is None else str(version))
+    
+    print(f"Pipeline complete. Model version: {version if version else 'Not registered'}")

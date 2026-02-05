@@ -156,7 +156,22 @@ You can see the workflow YAML [here](https://github.com/teaching-on-testbeds/gou
 
 ::: {.cell .markdown}
 
-Now that we have a container image, we can deploy our application - 
+We also need to build the training container image, which Argo will use when we run a training job later:
+
+:::
+
+
+::: {.cell .code}
+```bash
+# runs in Chameleon Jupyter environment
+cd /work/gourmetgram-iac/ansible
+ansible-playbook -i inventory.yml argocd/workflow_build_training_init.yml
+```
+:::
+
+::: {.cell .markdown}
+
+Now that we have a container image, we can deploy our application -
 :::
 
 
