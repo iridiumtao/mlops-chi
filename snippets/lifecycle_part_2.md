@@ -274,12 +274,21 @@ To understand how the automated testing protects production, let's intentionally
 
 **Steps to trigger:**
 
-1. From the Argo Workflows UI, submit a `train-model` workflow
-2. In the workflow parameters, add `scenario=bad-architecture` to the training URL:
+To trigger this scenario, you would need to modify the training workflow to pass the scenario parameter:
+
+1. Edit the `train-model` workflow template in the Argo Workflows UI
+2. Update the `run-training` container command to include the scenario:
+   ```yaml
+   container:
+     image: registry.kube-system.svc.cluster.local:5000/gourmetgram-train:latest
+     command: [python, flow.py, bad-architecture]  # Pass scenario as argument
+     env:
+       - name: MLFLOW_TRACKING_URI
+         value: "http://mlflow.gourmetgram-platform.svc.cluster.local:8000"
    ```
-   endpoint-url: http://gourmetgram-train-service.gourmetgram-train.svc.cluster.local:8000/trigger-training?scenario=bad-architecture
-   ```
-3. Submit the workflow
+3. Submit the modified workflow
+
+**Note:** In a real deployment, you would create separate workflow templates for different scenarios (e.g., `train-model-bad-architecture`), or add a workflow parameter that gets passed through to the training pod
 
 **What happens:**
 
@@ -345,12 +354,19 @@ Take screenshots of:
 
 **Steps to trigger:**
 
-1. From the Argo Workflows UI, submit a `train-model` workflow
-2. In the workflow parameters, add `scenario=oversized` to the training URL:
+To trigger this scenario, modify the training workflow similarly:
+
+1. Edit the `train-model` workflow template in the Argo Workflows UI
+2. Update the `run-training` container command to include the oversized scenario:
+   ```yaml
+   container:
+     image: registry.kube-system.svc.cluster.local:5000/gourmetgram-train:latest
+     command: [python, flow.py, oversized]  # Pass oversized scenario
+     env:
+       - name: MLFLOW_TRACKING_URI
+         value: "http://mlflow.gourmetgram-platform.svc.cluster.local:8000"
    ```
-   endpoint-url: http://gourmetgram-train-service.gourmetgram-train.svc.cluster.local:8000/trigger-training?scenario=oversized
-   ```
-3. Submit the workflow
+3. Submit the modified workflow
 
 **What happens:**
 
