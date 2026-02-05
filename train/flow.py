@@ -1,5 +1,6 @@
 import os
 import time
+import subprocess
 import torch
 import mlflow
 import asyncio
@@ -14,12 +15,13 @@ app = FastAPI()
 pipeline_lock = asyncio.Lock()
 
 @task
-def load_and_train_model():
+def load_and_train_model(scenario: str = "normal"):
     logger = get_run_logger()
-    logger.info("Pretending to train, actually just loading a model...")
+    logger.info(f"Pretending to train with scenario: {scenario}")
+    logger.info("Actually just loading a model...")
     time.sleep(10)
     model = torch.load(MODEL_PATH, weights_only=False, map_location=torch.device('cpu'))
-    
+
     logger.info("Logging model to MLflow...")
     mlflow.pytorch.log_model(model, artifact_path="model")
     return model
@@ -27,13 +29,65 @@ def load_and_train_model():
 @task
 def evaluate_model():
     logger = get_run_logger()
-    logger.info("Model evaluation on basic metrics...")
-    accuracy = 0.85
-    loss = 0.35
-    logger.info(f"Logging metrics: accuracy={accuracy}, loss={loss}")
-    mlflow.log_metric("accuracy", accuracy)
-    mlflow.log_metric("loss", loss)
-    return accuracy >= 0.80
+    logger.info("Running pytest test suite for model evaluation...")
+
+    try:
+        # Execute pytest with verbose output and short tracebacks
+        result = subprocess.run(
+            ["pytest", "tests/", "-v", "--tb=short"],
+            cwd="/app",
+            capture_output=True,
+            text=True
+        )
+
+        # Parse pytest exit code (0 = all tests passed, non-zero = failures)
+        all_tests_passed = (result.returncode == 0)
+
+        # Extract test counts from pytest output
+        # Pytest typically outputs something like "5 passed in 0.23s" or "2 failed, 3 passed in 0.45s"
+        output_lines = result.stdout + result.stderr
+
+        # Simple parsing: count occurrences of "passed", "failed" in output
+        # More robust: use pytest --junit-xml or --json-report, but this is educational
+        tests_passed = 0
+        tests_failed = 0
+        tests_total = 0
+
+        # Look for pytest summary line patterns
+        if "passed" in output_lines:
+            # Try to extract numbers from summary
+            import re
+            passed_match = re.search(r'(\d+) passed', output_lines)
+            failed_match = re.search(r'(\d+) failed', output_lines)
+
+            if passed_match:
+                tests_passed = int(passed_match.group(1))
+            if failed_match:
+                tests_failed = int(failed_match.group(1))
+
+            tests_total = tests_passed + tests_failed
+
+        # Log summary to Prefect logger
+        if all_tests_passed:
+            logger.info(f"Pytest: {tests_passed} passed")
+        else:
+            logger.info(f"Pytest: {tests_failed} failed, {tests_passed} passed")
+            logger.warning("Some tests failed. Model will not be registered.")
+
+        # Log metrics to MLFlow
+        mlflow.log_metric("tests_passed", tests_passed)
+        mlflow.log_metric("tests_failed", tests_failed)
+        mlflow.log_metric("tests_total", tests_total)
+
+        return all_tests_passed
+
+    except Exception as e:
+        logger.error(f"Failed to execute pytest: {e}")
+        # Treat pytest execution failure as test failure
+        mlflow.log_metric("tests_passed", 0)
+        mlflow.log_metric("tests_failed", 0)
+        mlflow.log_metric("tests_total", 0)
+        return False
 
 @task
 def register_model_if_passed(passed: bool):
@@ -56,21 +110,21 @@ def register_model_if_passed(passed: bool):
     return registered_model.version
 
 @flow(name="mlflow_flow")
-def ml_pipeline_flow():
+def ml_pipeline_flow(scenario: str = "normal"):
     with mlflow.start_run():
-        load_and_train_model()
+        load_and_train_model(scenario)
         passed = evaluate_model()
         version = register_model_if_passed(passed)
         return version
 
 @app.post("/trigger-training")
-async def trigger_training():
+async def trigger_training(scenario: str = "normal"):
     if pipeline_lock.locked():
         raise HTTPException(status_code=423, detail="Pipeline is already running. Please wait.")
 
     async with pipeline_lock:
         loop = asyncio.get_event_loop()
-        version = await loop.run_in_executor(None, ml_pipeline_flow)
+        version = await loop.run_in_executor(None, ml_pipeline_flow, scenario)
         if version:
             return {"status": "Pipeline executed successfully", "new_model_version": version}
         else:
