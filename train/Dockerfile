@@ -11,11 +11,13 @@ RUN pip install --no-cache-dir \
     prefect \
     mlflow==2.20.2 \
     fastapi \
-    uvicorn
+    uvicorn \
+    pytest
 
 # Copy application files
 COPY flow.py /app/flow.py
 COPY food11.pth /app/food11.pth
+COPY tests/ /app/tests/
 
 # Expose port for FastAPI
 EXPOSE 8000
