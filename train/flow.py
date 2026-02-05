@@ -1,4 +1,3 @@
-import os
 import sys
 import time
 import subprocess
@@ -6,7 +5,6 @@ import torch
 import mlflow
 from prefect import flow, task, get_run_logger
 from mlflow.tracking import MlflowClient
-import oversized_model
 
 MODEL_PATH = "food11.pth"
 MODEL_NAME = "GourmetGramFood11Model"
@@ -65,6 +63,7 @@ def load_and_train_model(scenario: str = "normal"):
     logger.info("Logging model to MLflow...")
     mlflow.pytorch.log_model(model, artifact_path="model")
     return model
+
 
 @task
 def evaluate_model():
@@ -127,6 +126,7 @@ def evaluate_model():
         mlflow.log_metric("tests_total", 0)
         return False
 
+
 @task
 def register_model_if_passed(passed: bool):
     logger = get_run_logger()
@@ -147,6 +147,7 @@ def register_model_if_passed(passed: bool):
     logger.info(f"Model registered (v{registered_model.version}) and alias 'development' assigned.")
     return registered_model.version
 
+
 @flow(name="mlflow_flow")
 def ml_pipeline_flow(scenario: str = "normal"):
     with mlflow.start_run():
@@ -155,15 +156,16 @@ def ml_pipeline_flow(scenario: str = "normal"):
         version = register_model_if_passed(passed)
         return version
 
+
 if __name__ == "__main__":
     # Support command-line argument for scenario (default: normal)
     scenario = sys.argv[1] if len(sys.argv) > 1 else "normal"
     print(f"Starting training pipeline with scenario: {scenario}")
-    
+
     version = ml_pipeline_flow(scenario)
-    
+
     # Write model version to file for workflow to read
     with open("/tmp/model_version", "w") as f:
         f.write("" if version is None else str(version))
-    
+
     print(f"Pipeline complete. Model version: {version if version else 'Not registered'}")
