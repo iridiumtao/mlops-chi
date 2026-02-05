@@ -1,3 +1,6 @@
+# Ignore oversized model
+train/oversized_model.pth
+
 # macOS
 .DS_Store
 
