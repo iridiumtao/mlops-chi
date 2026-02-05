@@ -17,10 +17,12 @@ RUN pip install --no-cache-dir \
 # Copy application files
 COPY flow.py /app/flow.py
 COPY food11.pth /app/food11.pth
-COPY bad_model.pth /app/bad_model.pth
-COPY oversized_model.pth /app/oversized_model.pth
 COPY oversized_model.py /app/oversized_model.py
+COPY create_failure_models.py /app/create_failure_models.py
 COPY tests/ /app/tests/
+
+# Generate failure scenario models during build
+RUN python /app/create_failure_models.py
 
 # Expose port for FastAPI
 EXPOSE 8000
