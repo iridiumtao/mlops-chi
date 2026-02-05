@@ -9,16 +9,11 @@ RUN pip install --no-cache-dir \
 
 RUN pip install --no-cache-dir \
     prefect \
-    mlflow==2.20.2 \
-    fastapi \
-    uvicorn
+    mlflow==2.20.2
 
 # Copy application files
 COPY flow.py /app/flow.py
 COPY food11.pth /app/food11.pth
 
-# Expose port for FastAPI
-EXPOSE 8000
-
-# Start FastAPI server
+# Run training pipeline
 ENTRYPOINT ["python", "flow.py"]

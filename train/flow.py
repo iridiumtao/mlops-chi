@@ -1,17 +1,11 @@
-import os
 import time
 import torch
 import mlflow
-import asyncio
-from fastapi import FastAPI, HTTPException
 from prefect import flow, task, get_run_logger
 from mlflow.tracking import MlflowClient
 
 MODEL_PATH = "food11.pth"
 MODEL_NAME = "GourmetGramFood11Model"
-
-app = FastAPI()
-pipeline_lock = asyncio.Lock()
 
 @task
 def load_and_train_model():
@@ -63,19 +57,7 @@ def ml_pipeline_flow():
         version = register_model_if_passed(passed)
         return version
 
-@app.post("/trigger-training")
-async def trigger_training():
-    if pipeline_lock.locked():
-        raise HTTPException(status_code=423, detail="Pipeline is already running. Please wait.")
-
-    async with pipeline_lock:
-        loop = asyncio.get_event_loop()
-        version = await loop.run_in_executor(None, ml_pipeline_flow)
-        if version:
-            return {"status": "Pipeline executed successfully", "new_model_version": version}
-        else:
-            return {"status": "Pipeline executed, but no new model registered"}
-
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    version = ml_pipeline_flow()
+    with open("/tmp/model_version", "w") as f:
+        f.write("" if version is None else str(version))

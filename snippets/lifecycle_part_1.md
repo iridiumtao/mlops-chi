@@ -17,61 +17,11 @@ We will start with the first stage, where:
 
 ::: {.cell .markdown}
 
-### Set up model training environment
+### The training environment
 
-We are going to assume that model training does *not* run in Kubernetes - it may run on a node that is even outside of our cluster, like a bare metal GPU node on Chameleon.  (In the diagram above, the dark-gray settings are not in Kubernetes).
+In this lab, model training runs as a **Kubernetes pod** managed by Argo Workflows — it does not require a separate container or a manually-started server. The training container image (built from `train/` in the mlops-chi repository) is pushed to the local cluster registry as part of the initial setup, and Argo launches it as a pod when training is triggered.
 
-In this example, the "training" environment will be a Docker container on one of our VM instances, because that is the infrastructure that we currently have deployed - but it could just as easily be on an entirely separate instance.
-
-Let's set up that Docker container now. First, SSH to the node1 instance. Then, run
-
-```bash
-# runs on node1
-git clone https://github.com/teaching-on-testbeds/mlops-chi
-docker build -t gourmetgram-train ~/mlops-chi/train/
-```
-
-to build the container image.
-
-The "training" environment will send a model to the MLFlow model registry, which is running on Kubernetes, so it needs to know its address. In this case, it happens to be on the same host, but in general it doesn't need to be. 
-
-Start the "training" container with the command below, but in place of `A.B.C.D`, **substitute the floating IP address associated with your Kubernetes deployment**.
-
-```bash
-# runs on node1
-docker run --rm -d -p 9090:8000 \
-    -e MLFLOW_TRACKING_URI=http://A.B.C.D:8000/ \
-    -e GIT_PYTHON_REFRESH=quiet \
-    --name gourmetgram-train \
-    gourmetgram-train
-```
-
-(we map port 8000 in the training container to port 8999 on the host, because we are already hosting the MLFlow model registry on port 8000.)
-
-Run
-
-```bash
-# runs on node1
-docker logs gourmetgram-train --follow
-```
-
-and wait until you see
-
-```
-INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
-```
-
-:::
-
-::: {.cell .markdown}
-
-Now, our training job is ready to run! We have set it up so that training is triggered if a request is sent to the HTTP endpoint
-
-```
-http://E.F.G.H:9090/trigger-training
-```
-
-(where `E.F.G.H` is the address of the training node. In this example, it happens to be the same address as the Kubernetes cluster head node, just because we are running it on the same node.)
+Because the training pod runs inside the same cluster as MLflow, it can reach the model registry directly over the cluster-internal network (`mlflow.gourmetgram-platform.svc.cluster.local:8000`). No floating IP or port mapping is needed.
 
 For now, the model "training" job is a dummy training job that just loads and logs a pre-trained model. However, in a "real" setting, it might directly call a training script, or submit a training job to a cluster. Similarly, we use a "dummy" evaluation job, but in a "real" setting it would include an authentic evaluation.
 
@@ -82,7 +32,7 @@ def load_and_train_model():
     logger.info("Pretending to train, actually just loading a model...")
     time.sleep(10)
     model = torch.load(MODEL_PATH, weights_only=False, map_location=torch.device('cpu'))
-    
+
     logger.info("Logging model to MLflow...")
     mlflow.pytorch.log_model(model, artifact_path="model")
     return model
@@ -99,6 +49,7 @@ def evaluate_model():
     return accuracy >= 0.80
 ```
 
+When the pipeline runs, it registers the model in MLflow with the alias `"development"`, and writes the new model version number to a file. Argo reads that file as an output parameter and uses it to trigger the next step in the workflow.
 
 :::
 
@@ -107,7 +58,7 @@ def evaluate_model():
 
 ### Run a training job
 
-We have already set up an Argo workflow template to trigger the training job on the external endpoint. If you have the Argo Workflows dashboard open, you can see it by:
+We have already set up an Argo workflow template to run the training job as a pod inside the cluster. If you have the Argo Workflows dashboard open, you can see it by:
 
 * clicking on "Workflow Templates" in the left side menu (mouse over each icon to see what it is)
 * then clicking on the "train-model" template
@@ -127,55 +78,47 @@ metadata:
   name: train-model
 ```
 
-then, some information about the name of the first "node" in the graph (`training-and-build` in this example), and any parameters it takes as input (here, `endpoint-ip`):
+then, the name of the first "node" in the graph (`training-and-build` in this example). Note that this workflow takes no input parameters — it does not need any, because everything it needs (the training image, the MLflow address) is already known inside the cluster:
 
 ```yaml
 spec:
   entrypoint: training-and-build
-  arguments:
-    parameters:
-    - name: endpoint-ip
 ```
 
-Now, we have a sequence of nodes. 
+Now, we have a sequence of steps.
 
 ```yaml
   templates:
   - name: training-and-build
     steps:
-      - - name: trigger-training-endpoint
-          template: call-endpoint
-          arguments:
-            parameters:
-            - name: endpoint-ip
-              value: "{{workflow.parameters.endpoint-ip}}"
+      - - name: run-training
+          template: run-training
       - - name: build-container
           template: trigger-build
           arguments:
             parameters:
             - name: model-version
-              value: "{{steps.trigger-training-endpoint.outputs.result}}"
-          when: "{{steps.trigger-training-endpoint.outputs.result}} != ''"
+              value: "{{steps.run-training.outputs.parameters.model-version}}"
+          when: "{{steps.run-training.outputs.parameters.model-version}} != ''"
 ```
 
-The `training-and-build` node runs two steps: a  `trigger-training-endpoint` step using the `call-endpoint` template, that takes as input an `endpoint-ip`, and then a `build-container` step  using the `trigger-build` template, that takes as input a `model-version` (which comes from the `trigger-training-endpoint` step!). The `build-container` step only runs if there is a result (the model version!) saved in `steps.trigger-training-endpoint.outputs.result`.
+The `training-and-build` node runs two steps: a `run-training` step using the `run-training` template, and then a `build-container` step using the `trigger-build` template, that takes as input a `model-version` (which comes from the `run-training` step!). The `build-container` step only runs if there is a non-empty model version in `steps.run-training.outputs.parameters.model-version`.
 
-
-Then, we can see the `call-endpoint` template, which creates a pod with the specified container image and runs a command in it:
+The `run-training` template launches a container using the training image from the local cluster registry. It sets the `MLFLOW_TRACKING_URI` environment variable so the training code can reach MLflow inside the cluster, and runs `python flow.py`. The script executes the training pipeline and writes the new model version to a file — Argo reads that file as an output parameter and passes it to the next step:
 
 ```yaml
-  - name: call-endpoint
-    inputs:
+  - name: run-training
+    outputs:
       parameters:
-      - name: endpoint-ip
-    script:
-      image: alpine:3.18
-      command: [sh]
-      source: |
-        apk add --no-cache curl jq > /dev/null
-        RESPONSE=$(curl -s -X POST http://{{inputs.parameters.endpoint-ip}}:9090/trigger-training)
-        VERSION=$(echo $RESPONSE | jq -r '.new_model_version // empty')
-        echo -n $VERSION
+      - name: model-version
+        valueFrom:
+          path: /tmp/model_version
+    container:
+      image: registry.kube-system.svc.cluster.local:5000/gourmetgram-train:latest
+      command: [python, flow.py]
+      env:
+        - name: MLFLOW_TRACKING_URI
+          value: "http://mlflow.gourmetgram-platform.svc.cluster.local:8000"
 ```
 
 and the `trigger-build` template, which creates an Argo workflow using the `build-container-image` Argo Workflow template!
@@ -208,14 +151,11 @@ Now that we understand what is included in the workflow, let's trigger it.
 
 ::: {.cell .markdown}
 
-We could set up any of a wide variety of [triggers](https://argoproj.github.io/argo-events/sensors/triggers/argo-workflow/) to train and re-train a model, but in this case, we'll do it ourselves manually. In the Argo Workflows dashboard, 
+We could set up any of a wide variety of [triggers](https://argoproj.github.io/argo-events/sensors/triggers/argo-workflow/) to train and re-train a model, but in this case, we'll do it ourselves manually. In the Argo Workflows dashboard,
 
-* click "Submit" 
-* in the space for specifying the "endpoint-ip" parameter, specify the floating IP address of your training node. (In this example, as we said, it will be the same address as the Kubernetes cluster head node.)
+* click "Submit"
 
-In the logs from the "gourmetgram-train" container, you should see that the "dummy" training job is triggered. This is step 2 in the diagram above.
-
-You can see the progress of the workflow in the Argo Workflows UI. Take a screenshot for later reference.
+Argo will launch the training pod. You can see the pod's logs and the progress of the workflow directly in the Argo Workflows UI. This is step 2 in the diagram above. Take a screenshot for later reference.
 
 Once it is finished, check the MLFlow dashboard at 
 
@@ -244,3 +184,85 @@ This is triggered *automatically* when a new model version is returned from a tr
 Click on a "build-container-image" workflow to see its steps, and take a screenshot for later reference.
 
 :::
+
+
+::: {.cell .markdown}
+
+### Preparing for GPU-based training
+
+In this lab, training is "dummy" — it runs on a CPU instance and just loads a pre-trained model. In a real project, you would want to run training on a GPU instance. Below, we walk through exactly what you would change to do that, using the files you have already worked with in this lab.
+
+**1. Adding an H100 GPU instance to your cluster**
+
+Today, your lease (in notebook 2) reserves three `m1.medium` CPU instances:
+
+```bash
+openstack reservation lease create lease_mlops_netID \
+  --reservation "resource_type=flavor:instance,flavor_id=$(openstack flavor show m1.medium -f value -c id),amount=3"
+```
+
+and Terraform provisions all three with the same flavor. In `variables.tf`, there is a single `reservation` variable (one flavor UUID), and in `main.tf` every node in the `for_each` loop gets `flavor_id = var.reservation`.
+
+To add one H100 GPU instance, you would need two changes:
+
+* **Lease:** add a second `--reservation` line to the lease command for the GPU flavor. On KVM@TACC, GPU flavors are listed with `openstack flavor list`. You would reserve `amount=1` of the GPU flavor. This gives you a second reservation UUID.
+
+* **Terraform:** you need to distinguish the GPU node from the CPU nodes so it gets the GPU reservation's flavor ID instead of the CPU one. One way: add a second variable `gpu_reservation` to `variables.tf`, add a `"gpu-node"` entry to the `nodes` map in `variables.tf` with a new private-network IP (e.g. `"192.168.1.14"`), add a matching entry to `hosts.yaml` for Kubespray, and change the `flavor_id` assignment in `main.tf` to be conditional:
+
+```
+flavor_id   = each.key == "gpu-node" ? var.gpu_reservation : var.reservation
+```
+
+This keeps the `for_each` loop structure, but the GPU node gets its own flavor.
+
+**2. Making the training pod run on the GPU node**
+
+Kubernetes does not automatically know which node has a GPU. You need to tell the scheduler to place the training pod on that specific node. You do this with a `nodeSelector` in the pod spec.
+
+In `train-model.yaml`, the `run-training` template currently looks like:
+
+```yaml
+  - name: run-training
+    outputs:
+      parameters:
+      - name: model-version
+        valueFrom:
+          path: /tmp/model_version
+    container:
+      image: registry.kube-system.svc.cluster.local:5000/gourmetgram-train:latest
+      command: [python, flow.py]
+      env:
+        - name: MLFLOW_TRACKING_URI
+          value: "http://mlflow.gourmetgram-platform.svc.cluster.local:8000"
+```
+
+To pin it to the GPU node, you would add a `nodeSelector` at the **template level** (the same level as `container:`, not inside it). Kubespray labels each node with `kubernetes.io/hostname` using the inventory hostname (e.g. `node1`, `node2`, `node3`). If you added a `"gpu-node"` entry to the `nodes` map in `variables.tf`, its inventory hostname would be `gpu-node`, so you would add:
+
+```yaml
+  - name: run-training
+    nodeSelector:
+      kubernetes.io/hostname: gpu-node
+    outputs:
+      parameters:
+      - name: model-version
+        valueFrom:
+          path: /tmp/model_version
+    container:
+      image: registry.kube-system.svc.cluster.local:5000/gourmetgram-train:latest
+      command: [python, flow.py]
+      env:
+        - name: MLFLOW_TRACKING_URI
+          value: "http://mlflow.gourmetgram-platform.svc.cluster.local:8000"
+```
+
+Alternatively, if the GPU node has been labeled with the NVIDIA device plugin label `nvidia.com/gpu: "true"`, you could match on that instead — which is more portable, because it does not depend on the node's hostname:
+
+```yaml
+    nodeSelector:
+      nvidia.com/gpu: "true"
+```
+
+You would also update the Dockerfile to install the GPU version of PyTorch (replacing the `--index-url https://download.pytorch.org/whl/cpu` line with the appropriate CUDA index URL), and change `map_location=torch.device('cpu')` in `flow.py` to `map_location=torch.device('cuda')`.
+
+:::
+
