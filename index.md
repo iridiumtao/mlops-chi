@@ -1151,7 +1151,18 @@ You can see the workflow YAML [here](https://github.com/teaching-on-testbeds/gou
 
 
 
-Now that we have a container image, we can deploy our application - 
+We also need to build the training container image, which Argo will use when we run a training job later:
+
+
+
+```bash
+# runs in Chameleon Jupyter environment
+cd /work/gourmetgram-iac/ansible
+ansible-playbook -i inventory.yml argocd/workflow_build_training_init.yml
+```
+
+
+Now that we have a container image, we can deploy our application -
 
 
 ```bash
@@ -1224,93 +1235,131 @@ We will start with the first stage, where:
 
 
 
-### Set up model training environment
+### The training environment
 
-We are going to assume that model training does *not* run in Kubernetes - it may run on a node that is even outside of our cluster, like a bare metal GPU node on Chameleon.  (In the diagram above, the dark-gray settings are not in Kubernetes).
+In this lab, model training runs as a **Kubernetes pod** managed by Argo Workflows — it does not require a separate container or a manually-started server. The training container image (built from the [gourmetgram-train](https://github.com/teaching-on-testbeds/gourmetgram-train) repository) is pushed to the local cluster registry as part of the initial setup, and Argo launches it as a pod when training is triggered.
 
-In this example, the "training" environment will be a Docker container on one of our VM instances, because that is the infrastructure that we currently have deployed - but it could just as easily be on an entirely separate instance.
+Because the training pod runs inside the same cluster as MLflow, it can reach the model registry directly over the cluster-internal network (`mlflow.gourmetgram-platform.svc.cluster.local:8000`). No floating IP or port mapping is needed.
 
-Let's set up that Docker container now. First, SSH to the node1 instance. Then, run
+For now, the model "training" job is a dummy training job that just loads and logs a pre-trained model. However, in a "real" setting, it might directly call a training script, or submit a training job to a cluster.
 
-```bash
-# runs on node1
-git clone https://github.com/teaching-on-testbeds/mlops-chi
-docker build -t gourmetgram-train ~/mlops-chi/train/
-```
-
-to build the container image.
-
-The "training" environment will send a model to the MLFlow model registry, which is running on Kubernetes, so it needs to know its address. In this case, it happens to be on the same host, but in general it doesn't need to be. 
-
-Start the "training" container with the command below, but in place of `A.B.C.D`, **substitute the floating IP address associated with your Kubernetes deployment**.
-
-```bash
-# runs on node1
-docker run --rm -d -p 9090:8000 \
-    -e MLFLOW_TRACKING_URI=http://A.B.C.D:8000/ \
-    -e GIT_PYTHON_REFRESH=quiet \
-    --name gourmetgram-train \
-    gourmetgram-train
-```
-
-(we map port 8000 in the training container to port 8999 on the host, because we are already hosting the MLFlow model registry on port 8000.)
-
-Run
-
-```bash
-# runs on node1
-docker logs gourmetgram-train --follow
-```
-
-and wait until you see
-
-```
-INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
-```
-
-
-
-Now, our training job is ready to run! We have set it up so that training is triggered if a request is sent to the HTTP endpoint
-
-```
-http://E.F.G.H:9090/trigger-training
-```
-
-(where `E.F.G.H` is the address of the training node. In this example, it happens to be the same address as the Kubernetes cluster head node, just because we are running it on the same node.)
-
-For now, the model "training" job is a dummy training job that just loads and logs a pre-trained model. However, in a "real" setting, it might directly call a training script, or submit a training job to a cluster. Similarly, we use a "dummy" evaluation job, but in a "real" setting it would include an authentic evaluation.
+The training pipeline supports different **scenarios** for testing failure cases:
 
 ```python
 @task
-def load_and_train_model():
+def load_and_train_model(scenario: str = "normal"):
     logger = get_run_logger()
-    logger.info("Pretending to train, actually just loading a model...")
+    logger.info(f"Loading model with scenario: {scenario}")
+
+    # Map scenario to model file
+    scenario_to_model = {
+        "normal": "food11.pth",
+        "bad-architecture": "bad_model.pth",
+        "oversized": "oversized_model.pth"
+    }
+
+    model_path = scenario_to_model.get(scenario, "food11.pth")
+    logger.info(f"Loading model from {model_path}...")
     time.sleep(10)
-    model = torch.load(MODEL_PATH, weights_only=False, map_location=torch.device('cpu'))
-    
+
+    model = torch.load(model_path, weights_only=False, map_location=torch.device('cpu'))
+
     logger.info("Logging model to MLflow...")
     mlflow.pytorch.log_model(model, artifact_path="model")
     return model
+```
 
+These scenarios allow us to test how the pipeline handles:
+- **normal**: A valid MobileNetV2 model that works correctly
+- **bad-architecture**: A model with incompatible architecture (will fail in staging tests)
+- **oversized**: A model that exceeds Kubernetes resource limits (will fail deployment)
+
+
+
+
+### Evaluating models with pytest
+
+In a real MLOps pipeline, model evaluation is critical. Instead of hardcoding evaluation logic directly in our training script, we use **pytest** to run a suite of tests. This approach has several advantages:
+
+* **Modularity**: Tests are separate files that can be updated independently
+* **Standardization**: Pytest is an industry-standard testing framework
+* **Extensibility**: Easy to add new tests without modifying the main training code
+* **Reusability**: Same test framework used throughout software engineering
+
+Our evaluation step runs pytest against a test directory:
+
+```python
 @task
 def evaluate_model():
     logger = get_run_logger()
-    logger.info("Model evaluation on basic metrics...")
-    accuracy = 0.85
-    loss = 0.35
-    logger.info(f"Logging metrics: accuracy={accuracy}, loss={loss}")
-    mlflow.log_metric("accuracy", accuracy)
-    mlflow.log_metric("loss", loss)
-    return accuracy >= 0.80
+    logger.info("Running pytest test suite for model evaluation...")
+
+    try:
+        # Execute pytest and capture results
+        result = subprocess.run(
+            ["pytest", "tests/", "-v", "--tb=short"],
+            cwd="/app",
+            capture_output=True,
+            text=True
+        )
+
+        all_tests_passed = (result.returncode == 0)
+
+        # Extract test counts from pytest output
+        output_lines = result.stdout + result.stderr
+        tests_passed = 0
+        tests_failed = 0
+
+        import re
+        passed_match = re.search(r'(\d+) passed', output_lines)
+        failed_match = re.search(r'(\d+) failed', output_lines)
+
+        if passed_match:
+            tests_passed = int(passed_match.group(1))
+        if failed_match:
+            tests_failed = int(failed_match.group(1))
+
+        # Log metrics to MLFlow
+        mlflow.log_metric("tests_passed", tests_passed)
+        mlflow.log_metric("tests_failed", tests_failed)
+        mlflow.log_metric("tests_total", tests_passed + tests_failed)
+
+        return all_tests_passed
+
+    except Exception as e:
+        logger.error(f"Failed to execute pytest: {e}")
+        return False
 ```
 
+The tests themselves live in a `tests/` directory. For this tutorial, we use "dummy" tests that simulate realistic evaluation behavior:
+
+```python
+# tests/test_model_accuracy.py
+import random
+
+def test_model_accuracy():
+    """Simulate model accuracy test with probabilistic results"""
+    # 70% chance of high accuracy (0.85), 30% chance of lower accuracy (0.75)
+    simulated_accuracy = random.choices([0.85, 0.75], weights=[0.7, 0.3])[0]
+    assert simulated_accuracy >= 0.80, f"Accuracy {simulated_accuracy} below threshold"
+```
+
+In a real setting, these tests would:
+* Load a validation dataset
+* Run inference on the model
+* Calculate actual metrics (accuracy, precision, recall, F1)
+* Verify the model meets minimum quality thresholds
+
+The key pattern here is: **integrate established testing frameworks into your MLOps pipeline**, rather than reinventing evaluation logic.
+
+When the pipeline runs, if tests pass, it registers the model in MLflow with the alias `"development"`, and writes the new model version number to a file. Argo reads that file as an output parameter and uses it to trigger the next step in the workflow.
 
 
 
 
 ### Run a training job
 
-We have already set up an Argo workflow template to trigger the training job on the external endpoint. If you have the Argo Workflows dashboard open, you can see it by:
+We have already set up an Argo workflow template to run the training job as a pod inside the cluster. If you have the Argo Workflows dashboard open, you can see it by:
 
 * clicking on "Workflow Templates" in the left side menu (mouse over each icon to see what it is)
 * then clicking on the "train-model" template
@@ -1328,58 +1377,73 @@ metadata:
   name: train-model
 ```
 
-then, some information about the name of the first "node" in the graph (`training-and-build` in this example), and any parameters it takes as input (here, `endpoint-ip`):
+then, the name of the first "node" in the graph (`training-and-build` in this example). Note that this workflow takes no input parameters — it does not need any, because everything it needs (the training image, the MLflow address) is already known inside the cluster:
 
 ```yaml
 spec:
   entrypoint: training-and-build
-  arguments:
-    parameters:
-    - name: endpoint-ip
 ```
 
-Now, we have a sequence of nodes. 
+Now, we have a sequence of steps.
 
 ```yaml
   templates:
   - name: training-and-build
     steps:
-      - - name: trigger-training-endpoint
-          template: call-endpoint
-          arguments:
-            parameters:
-            - name: endpoint-ip
-              value: "{{workflow.parameters.endpoint-ip}}"
+      - - name: run-training
+          template: run-training
       - - name: build-container
           template: trigger-build
           arguments:
             parameters:
             - name: model-version
-              value: "{{steps.trigger-training-endpoint.outputs.result}}"
-          when: "{{steps.trigger-training-endpoint.outputs.result}} != ''"
+              value: "{{steps.run-training.outputs.parameters.model-version}}"
+          when: "{{steps.run-training.outputs.parameters.model-version}} != ''"
 ```
 
-The `training-and-build` node runs two steps: a  `trigger-training-endpoint` step using the `call-endpoint` template, that takes as input an `endpoint-ip`, and then a `build-container` step  using the `trigger-build` template, that takes as input a `model-version` (which comes from the `trigger-training-endpoint` step!). The `build-container` step only runs if there is a result (the model version!) saved in `steps.trigger-training-endpoint.outputs.result`.
+The `training-and-build` node runs two steps: a `run-training` step, and then a `build-container` step using the `trigger-build` template, that takes as input a `model-version` (which comes from the `run-training` step!). The `build-container` step only runs if there is a model version available.
 
 
-Then, we can see the `call-endpoint` template, which creates a pod with the specified container image and runs a command in it:
+Then, we can see the `run-training` template, which runs the training as a Kubernetes pod:
 
 ```yaml
-  - name: call-endpoint
-    inputs:
+  - name: run-training
+    outputs:
       parameters:
-      - name: endpoint-ip
-    script:
-      image: alpine:3.18
-      command: [sh]
-      source: |
-        apk add --no-cache curl jq > /dev/null
-        RESPONSE=$(curl -s -X POST http://{{inputs.parameters.endpoint-ip}}:9090/trigger-training)
-        VERSION=$(echo $RESPONSE | jq -r '.new_model_version // empty')
-        echo -n $VERSION
+      - name: model-version
+        valueFrom:
+          path: /tmp/model_version
+    container:
+      image: registry.kube-system.svc.cluster.local:5000/gourmetgram-train:latest
+      command: [python, flow.py]
+      env:
+        - name: MLFLOW_TRACKING_URI
+          value: "http://mlflow.gourmetgram-platform.svc.cluster.local:8000"
 ```
 
-and the `trigger-build` template, which creates an Argo workflow using the `build-container-image` Argo Workflow template!
+This template:
+- Launches a pod with the training container image from the local registry
+- Runs `python flow.py` directly (no HTTP endpoint needed)
+- Sets the MLFlow tracking URI to reach the MLFlow service inside the cluster
+- Captures the model version from `/tmp/model_version` as an output parameter
+
+The training script writes the model version to `/tmp/model_version` after successful registration:
+
+```python
+if __name__ == "__main__":
+    # Support command-line argument for scenario (default: normal)
+    scenario = sys.argv[1] if len(sys.argv) > 1 else "normal"
+    version = ml_pipeline_flow(scenario)
+    
+    # Write model version for workflow to read
+    with open("/tmp/model_version", "w") as f:
+        f.write("" if version is None else str(version))
+```
+
+
+
+
+Finally, we can see the `trigger-build` template:
 
 ```yaml
   - name: trigger-build
@@ -1402,51 +1466,109 @@ and the `trigger-build` template, which creates an Argo workflow using the `buil
               value: "{{inputs.parameters.model-version}}"
 ```
 
-Now that we understand what is included in the workflow, let's trigger it.
+This template uses a resource with `action: create` to trigger a new workflow - our "build-container-image" workflow! (You'll see that one shortly.)
+
+Note that we pass along the `model-version` parameter from the training step to the container build step, so that the container build step knows which model version to use.
+
+
+
+Now, we can submit this workflow! In Argo:
+
+* Click on "Workflow Templates" in the left sidebar
+* Click on "train-model"
+* Click "Submit" in the top right
+* Click "Submit" again (we don't need to modify any parameters)
+
+This will start the training workflow.
 
 
 
 
-We could set up any of a wide variety of [triggers](https://argoproj.github.io/argo-events/sensors/triggers/argo-workflow/) to train and re-train a model, but in this case, we'll do it ourselves manually. In the Argo Workflows dashboard, 
+In Argo, you can watch the workflow progress in real time:
 
-* click "Submit" 
-* in the space for specifying the "endpoint-ip" parameter, specify the floating IP address of your training node. (In this example, as we said, it will be the same address as the Kubernetes cluster head node.)
+* Click on "Workflows" in the left side menu
+* Then find the workflow whose name starts with "train-model"
+* Click on it to open the detail page
 
-In the logs from the "gourmetgram-train" container, you should see that the "dummy" training job is triggered. This is step 2 in the diagram above.
+You can click on any step to see its logs, inputs, outputs, etc. For example, click on the "run-training" node to see the training logs. You should see pytest output showing which tests passed or failed.
 
-You can see the progress of the workflow in the Argo Workflows UI. Take a screenshot for later reference.
+Wait for it to finish. (It may take 10-15 minutes for the entire pipeline to complete, including the container build.)
 
-Once it is finished, check the MLFlow dashboard at 
 
+
+### Check the model registry
+
+After training completes successfully (and tests pass), you should see a new model version registered in MLflow. Open the MLFlow UI at `http://A.B.C.D:8000` (substituting your floating IP address).
+
+* Click on "Models" in the top menu
+* Click on "GourmetGramFood11Model"
+* You should see a new version with the alias "development"
+
+Take a screenshot for your reference.
+
+
+
+
+### Triggers in Argo Workflows
+
+In the example above, we manually triggered the training workflow. However, in a real MLOps system, training might be triggered automatically by various events:
+
+#### Time-based triggers (CronWorkflow)
+
+You can schedule training to run periodically using Argo's `CronWorkflow` resource:
+
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: train-model-cron
+spec:
+  schedule: "0 2 * * *"  # Run at 2 AM every day
+  workflowSpec:
+    workflowTemplateRef:
+      name: train-model
 ```
-http://A.B.C.D:8000
-```
 
-(using your own floating IP), and click on "Models". Since the model training is successful, and it passes an initial "evaluation", you should see a registered "GourmetGramFood11Model" from our training job. (This is step 2 in the diagram above.) 
+This is useful for:
+- Retraining on a fixed schedule (daily, weekly)
+- Training with fresh data that arrives periodically
+- Regular model refresh to prevent drift
 
-You may trigger the training job several times. Note that the model version number is updated each time, and the most recent one has the alias "development".
+#### Event-based triggers
+
+In production systems, training might also be triggered by:
+- **GitHub webhooks**: When new training code is pushed
+- **Data pipeline completion**: When new labeled data is available
+- **Model monitoring alerts**: When model performance degrades
+
+For example, you could use Argo Events to listen for GitHub webhooks and trigger training workflows automatically. We won't implement this in the lab (to avoid modifying GitHub settings), but the pattern would be:
+
+1. Set up an Argo EventSource for GitHub webhooks
+2. Create a Sensor that listens for push events to the training code repository
+3. Trigger the train-model workflow when a push event occurs
+
+This enables true continuous training where code changes immediately flow into production.
 
 
 
+### Next: Container build
 
-### Run a container build job
+When training completes successfully, the workflow automatically triggers the container build process. In the next section, we'll examine how the container build workflow:
 
-Now that we have a new registered, we need a new container build! (Steps 5, 6, 7 in the diagram above.) 
+1. Clones the application repository
+2. Downloads the model from MLflow
+3. Builds a new container image with the updated model
+4. Deploys to the staging environment
 
-This is triggered *automatically* when a new model version is returned from a training job.  In Argo Workflows, 
-
-* click on "Workflows"  in the left side menu (mouse over each icon to see what it is)
-* and note that a "build-container-image" workflow follows each "train-model" workflow.
-
-Click on a "build-container-image" workflow to see its steps, and take a screenshot for later reference.
+This completes Part 1 of the model lifecycle!
 
 
 ## Model and application lifecycle - Part 2
 
 Once we have a container image, the progression through the model/application lifecycle continues as the new version is promoted through different environments:
 
-* **Staging**: The container image is deployed in a staging environment that mimics the "production" service but without live users. In this staging environmenmt, we can perform integration tests against the service and also load tests to evaluate the inference performance of the system.
-* **Canary** (or blue/green, or other "preliminary" live environment): From the staging environment, the service can be promoted to a canary or other preliminary environment, where it gets requests from a small fraction of live users. In this environment, we are closely monitoring the service, its predictions, and the infrastructure for any signs of problems. 
+* **Staging**: The container image is deployed in a staging environment that mimics the "production" service but without live users. In this staging environment, we perform automated integration tests against the service, resource compatibility tests to validate the deployment, and load tests to evaluate the inference performance of the system.
+* **Canary** (or blue/green, or other "preliminary" live environment): From the staging environment, the service can be promoted to a canary or other preliminary environment, where it gets requests from a small fraction of live users. In this environment, we are closely monitoring the service, its predictions, and the infrastructure for any signs of problems.
 * **Production**: Finally, after a thorough offline and online evaluation, we may promote the model to the live production environment, where it serves most users. We will continue monitoring the system for signs of degradation or poor performance.
 
 
@@ -1457,14 +1579,20 @@ Once we have a container image, the progression through the model/application li
 ### Verify that the new model is deployed to staging
 
 
-Our "build-container-image" workflow automatically triggers the next stage, a "deploy-container-image" workflow, if successful. In Argo Workflows, 
+Our "build-container-image" workflow automatically triggers two workflows if successful:
 
-* click on "Workflows"  in the left side menu (mouse over each icon to see what it is)
-* and note that a "deploy-container-image" workflow follows each "build-container-image" workflow.
+1. **deploy-container-image**: Updates the staging deployment via ArgoCD
+2. **test-staging**: Runs automated tests against the staging deployment
+
+In Argo Workflows:
+
+* Click on "Workflows" in the left side menu (mouse over each icon to see what it is)
+* Note that a "deploy-container-image" workflow follows each "build-container-image" workflow
+* You should also see a "test-staging" workflow that runs after deployment completes
 
 Then, open the staging service:
 
-* Visit `http://A.B.C.D:8081` (substituting the value of your floating IP) 
+* Visit `http://A.B.C.D:8081` (substituting the value of your floating IP)
 
 [This version of the `gourmetgram` app](https://github.com/teaching-on-testbeds/gourmetgram/tree/workflow) has a `versions` endpoint:
 
@@ -1480,41 +1608,458 @@ def version():
 
 ```
 
-so, you can visit `http://A.B.C.D:8081/version`, and you should see the model version you just promoted to staging.
+So you can visit `http://A.B.C.D:8081/version`, and you should see the model version you just promoted to staging.
 
 
 
-### Promote to canary, staging
+### Automated testing in staging
 
-At this stage, we *could* have another automatically-triggered workflow to run tests against our model in staging (including load tests to verify that the operational metrics are sufficient). Then the workflow could promote it to canary, and so on. But let's instead do this part manually.
+Before promoting a model to the canary or production environment, we need to validate that:
 
-First, in the MLFlow Models UI, click on the "GourmetGramFood11Model" to see the list of versions. Take a screenshot of this page.
-Also, take a screenshot of `http://A.B.C.D:8081/version` (with your own floating IP), with both the address bar showing the URL and the response showing the version number visible in the screenshot.
+1. The model works correctly with the application code (integration testing)
+2. The model fits within the Kubernetes resource constraints (resource testing)
+3. The model meets operational performance requirements (load testing)
 
-From the Argo Workflows UI, find the `promote-model` workflow template and click "Submit". 
+In traditional manual workflows, a human operator would test these conditions by hand. In modern MLOps pipelines, these checks are automated and act as quality gates before promotion.
 
-* specify "staging" as the source environment
-* specify "canary" as the target environment
-* and, specify the version number of the model that is currently in staging (e.g. `1` or `3` or whatever is currently deployed)
 
-Then, run the workflow. 
 
-In the ArgoCD UI, you will see that a new pod is created for the "gourmetgram-canary" application, and then the pre-existing pod is deleted. Once the new pod is healthy, check the version that is deployed to the "canary" environment (`http://A.B.C.D:8080/version`) to verify. 
+#### Test 1: Integration testing
+
+**What it checks:** Does the new model work with the existing application code?
+
+**Why it matters:** A model trained with a different architecture (e.g., ResNet instead of MobileNetV2) may fail to load in the application, or produce incorrect output formats. The integration test validates the contract between the model and serving code.
+
+**How it works:**
+
+The `test-staging` workflow's first step calls the staging service's `/test` endpoint, which runs inference with a hardcoded test image:
+
+```yaml
+# From test-staging.yaml
+- name: check-predict
+  script:
+    image: curlimages/curl:latest
+    source: |
+      # Call /test endpoint (runs inference with hardcoded test image)
+      RESPONSE=$(curl -s "{{inputs.parameters.service-url}}/test")
+
+      # Verify response is a valid food class name
+      if echo "$RESPONSE" | grep -qE "(Bread|Dairy product|Dessert|...)"; then
+        echo "✓ Integration test PASSED"
+        echo "pass"
+      else
+        echo "✗ Integration test FAILED"
+        echo "fail"
+      fi
+```
+
+**What happens on failure:** If the model is incompatible with the application (e.g., wrong architecture), the `/test` endpoint will return an error or invalid response. The workflow detects this and triggers the `revert-staging` workflow to roll back to the previous working version.
+
+
+
+#### Test 2: Resource compatibility testing
+
+**What it checks:** Does the model fit within Kubernetes resource limits?
+
+**Why it matters:** Models can vary significantly in size. A much larger model (e.g., a ResNet-50 instead of MobileNetV2) may exceed the memory limits defined in the Kubernetes deployment (256Mi in our case). If the model is too large, the pod will be killed with an `OOMKilled` (Out Of Memory) status, or may remain in `Pending` state if resources cannot be allocated.
+
+**How it works:**
+
+The second step of `test-staging` checks the pod status using `kubectl`:
+
+```yaml
+# From test-staging.yaml
+- name: check-pod-status
+  script:
+    image: bitnami/kubectl:latest
+    source: |
+      # Get pod status
+      POD_STATUS=$(kubectl get pods -n {{inputs.parameters.namespace}} \
+        -l app=gourmetgram-staging -o jsonpath='{.items[0].status.phase}')
+
+      if [ "$POD_STATUS" = "Running" ]; then
+        # Check for OOMKilled
+        CONTAINER_STATE=$(kubectl get pods -n {{inputs.parameters.namespace}} \
+          -l app=gourmetgram-staging -o jsonpath='{.items[0].status.containerStatuses[0].state}')
+
+        if echo "$CONTAINER_STATE" | grep -q "OOMKilled"; then
+          echo "✗ Resource test FAILED: Container is OOMKilled"
+          echo "fail"
+        else
+          echo "✓ Resource test PASSED"
+          echo "pass"
+        fi
+      else
+        echo "✗ Resource test FAILED: Pod status is $POD_STATUS"
+        echo "fail"
+      fi
+```
+
+**What happens on failure:** If the model exceeds memory limits, the pod will be in `OOMKilled` or `CrashLoopBackOff` state. The workflow detects this and triggers revert.
+
+
+
+#### Test 3: Load testing for operational metrics
+
+**What it checks:** Does the model meet performance requirements under load?
+
+**Why it matters:** Even if a model loads successfully, it may be too slow for production use. Load testing validates that the service can handle concurrent requests within acceptable latency bounds.
+
+**How it works:**
+
+The third step uses `hey`, a load testing tool, to send concurrent requests:
+
+```yaml
+# From test-staging.yaml
+- name: run-load-test
+  script:
+    image: williamyeh/hey:latest
+    source: |
+      # Send 100 requests with 10 concurrent connections
+      hey -n 100 -c 10 -m GET "{{inputs.parameters.service-url}}/test" > /tmp/results.txt
+
+      # Parse results
+      SUCCESS_RATE=$(grep "Success rate" /tmp/results.txt | awk '{print $3}' | tr -d '%')
+      P95_LATENCY=$(grep "95%" /tmp/results.txt | awk '{print $2}')
+
+      # Check thresholds:
+      # - Success rate must be > 95%
+      # - P95 latency must be < 2000ms
+
+      if [ "$SUCCESS_RATE" -gt 95 ] && [ "$P95_MS" -lt 2000 ]; then
+        echo "✓ Load test PASSED"
+        echo "pass"
+      else
+        echo "✗ Load test FAILED"
+        echo "fail"
+      fi
+```
+
+**Metrics validated:**
+- **Success rate**: Percentage of requests that return 200 OK (must be >95%)
+- **P95 latency**: 95th percentile response time (must be <2000ms)
+
+**What happens on failure:** If the model is too slow or returns too many errors, the load test fails and triggers revert.
+
+
+
+### Branching logic: Pass → Promote, Fail → Revert
+
+After running all three tests, the workflow branches based on results. This is a key concept in MLOps: **automated decision-making based on test outcomes**.
+
+```yaml
+# From test-staging.yaml
+steps:
+  # ... tests run sequentially ...
+
+  # Step 4: Branching based on test results
+  - - name: promote-on-success
+      template: trigger-promote
+      when: "{{steps.integration-test.outputs.result}} == pass &&
+             {{steps.resource-test.outputs.result}} == pass &&
+             {{steps.load-test.outputs.result}} == pass"
+
+    - name: revert-on-failure
+      template: trigger-revert
+      when: "{{steps.integration-test.outputs.result}} == fail ||
+             {{steps.resource-test.outputs.result}} == fail ||
+             {{steps.load-test.outputs.result}} == fail"
+```
+
+**Two possible paths:**
+
+1. **All tests pass** → Automatically trigger `promote-model` workflow to deploy to canary
+2. **Any test fails** → Automatically trigger `revert-staging` workflow to roll back to previous version
+
+This branching is implemented using Argo Workflows' `when` conditions. Each branch is evaluated independently, and only the matching branch executes.
+
+
+
+### Observing automated promotion (happy path)
+
+In the Argo Workflows UI, watch the `test-staging` workflow after a successful staging deployment:
+
+1. **integration-test** step runs → should show ✓ PASSED
+2. **resource-test** step runs → should show ✓ PASSED
+3. **load-test** step runs → should show ✓ PASSED
+4. **promote-on-success** step triggers → creates a new `promote-model` workflow
+
+Click on the new `promote-model` workflow to watch it execute:
+- Retags the container image from `staging-1.0.X` to `canary-1.0.X`
+- Updates the MLFlow alias from "staging" to "canary"
+- Triggers ArgoCD to sync the canary deployment
+
+After the workflow completes, verify the promotion:
+
+* Visit `http://A.B.C.D:8080/version` (canary runs on port 8080)
+* You should see the same model version that was just tested in staging
+
+In the MLFlow UI:
+* Click on "GourmetGramFood11Model"
+* The model version should now have the "canary" alias (in addition to "development")
+* The "staging" alias remains on the same version
+
+Take screenshots of:
+1. The completed `test-staging` workflow showing all tests passed
+2. The triggered `promote-model` workflow
+3. The canary `/version` endpoint showing the new version
+4. The MLFlow UI showing the "canary" alias
+
+
+
+### Demonstrating failure scenarios
+
+To understand how the automated testing protects production, let's intentionally deploy a bad model and observe the revert behavior.
+
+
+
+#### Scenario 1: Model architecture incompatibility
+
+**Scenario:** A developer accidentally trains a ResNet model instead of MobileNetV2. The training container registers it to MLFlow, and the build workflow packages it into a container. What happens when it reaches staging?
+
+**Steps to trigger:**
+
+To trigger this scenario, you would need to modify the training workflow to pass the scenario parameter:
+
+1. Edit the `train-model` workflow template in the Argo Workflows UI
+2. Update the `run-training` container command to include the scenario:
+   ```yaml
+   container:
+     image: registry.kube-system.svc.cluster.local:5000/gourmetgram-train:latest
+     command: [python, flow.py, bad-architecture]  # Pass scenario as argument
+     env:
+       - name: MLFLOW_TRACKING_URI
+         value: "http://mlflow.gourmetgram-platform.svc.cluster.local:8000"
+   ```
+3. Submit the modified workflow
+
+**Note:** In a real deployment, you would create separate workflow templates for different scenarios (e.g., `train-model-bad-architecture`), or add a workflow parameter that gets passed through to the training pod
+
+**What happens:**
+
+1. The training service loads `bad_model.pth` (a ResNet model) instead of the normal MobileNetV2 model
+2. The model is registered to MLFlow with a new version number (e.g., version 6)
+3. The build workflow packages the bad model into a container
+4. The container is deployed to staging
+5. **Integration test runs and FAILS**: The application expects MobileNetV2's output structure, but receives ResNet's structure
+6. The `test-staging` workflow detects the failure
+7. **Revert workflow is triggered automatically**
+
+**Observe in Argo Workflows:**
+
+* The `test-staging` workflow shows:
+  - deployment successful
+  - integration-test FAILED
+  - (resource-test and load-test are skipped)
+  - revert-on-failure step executes
+* A new `revert-staging` workflow appears
+
+**What the revert workflow does:**
+
+```yaml
+# From revert-staging.yaml (simplified)
+steps:
+  # Step 1: Query MLFlow for previous "staging" model version
+  - name: get-previous-version
+    # Returns the last known good version (e.g., version 5)
+
+  # Step 2: Retag container image back to previous version
+  - name: retag-container
+    # Changes staging-1.0.6 → staging-1.0.5
+
+  # Step 3: Update ArgoCD to deploy previous version
+  - name: rollback-deployment
+    # Triggers pod restart with old image
+
+  # Step 4: Update MLFlow alias
+  - name: update-alias
+    # Moves "staging" alias back to version 5
+```
+
+**After revert completes:**
+
+* Visit `http://A.B.C.D:8081/version`
+* You should see the previous working version (not the bad model version)
+* The bad model version is still in MLFlow, but without the "staging" alias
+* The staging environment is operational again
+
+Take screenshots of:
+1. The `test-staging` workflow showing integration test failure
+2. The triggered `revert-staging` workflow
+3. The staging `/version` endpoint showing the reverted version
+4. The MLFlow UI showing the "staging" alias moved back
+
+
+
+#### Scenario 2: Resource constraint violation
+
+**Scenario:** A developer trains a much larger model that exceeds the Kubernetes memory limit (256Mi). The pod cannot start successfully.
+
+**Steps to trigger:**
+
+To trigger this scenario, modify the training workflow similarly:
+
+1. Edit the `train-model` workflow template in the Argo Workflows UI
+2. Update the `run-training` container command to include the oversized scenario:
+   ```yaml
+   container:
+     image: registry.kube-system.svc.cluster.local:5000/gourmetgram-train:latest
+     command: [python, flow.py, oversized]  # Pass oversized scenario
+     env:
+       - name: MLFLOW_TRACKING_URI
+         value: "http://mlflow.gourmetgram-platform.svc.cluster.local:8000"
+   ```
+3. Submit the modified workflow
+
+**What happens:**
+
+1. The training service creates `oversized_model.pth` (artificially inflated to >200Mi)
+2. The model is packaged into a container and deployed to staging
+3. Kubernetes tries to start the pod, but the model loading exceeds 256Mi memory limit
+4. **Resource test detects OOMKilled or CrashLoopBackOff status**
+5. The `test-staging` workflow triggers revert
+
+**Observe in Argo Workflows:**
+
+* The `test-staging` workflow shows:
+  - integration-test PASSED (or MAY fail if pod crashes during request)
+  - resource-test FAILED: Pod is OOMKilled
+  - revert-on-failure step executes
+
+**After revert:**
+
+* Staging environment is restored to previous working version
+* The oversized model remains in MLFlow but is not deployed
+
+Take screenshots of:
+1. The `test-staging` workflow showing resource test failure
+2. The Kubernetes pod status showing OOMKilled or CrashLoopBackOff
+3. The staging `/version` endpoint after revert
+
+
+
+### Understanding the automated promotion flow
+
+Let's visualize the complete flow from staging to canary with automated testing:
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│ build-container-image workflow completes                    │
+└───────────────────┬─────────────────────────────────────────┘
+                    │
+        ┌───────────┴───────────┐
+        │                       │
+        ▼                       ▼
+┌──────────────┐      ┌──────────────────┐
+│ Deploy to    │      │ test-staging     │
+│ staging      │      │ workflow starts  │
+└──────────────┘      └────────┬─────────┘
+                               │
+                    ┌──────────┴───────────┐
+                    │ Run tests:           │
+                    │ 1. Integration test  │
+                    │ 2. Resource test     │
+                    │ 3. Load test         │
+                    └──────────┬───────────┘
+                               │
+                ┌──────────────┴──────────────┐
+                │                             │
+         All tests pass?                 Any test fails?
+                │                             │
+                ▼                             ▼
+    ┌──────────────────────┐      ┌────────────────────┐
+    │ promote-on-success   │      │ revert-on-failure  │
+    │ Trigger promote-     │      │ Trigger revert-    │
+    │ model workflow       │      │ staging workflow   │
+    └──────────┬───────────┘      └──────────┬─────────┘
+               │                             │
+               ▼                             ▼
+    ┌─────────────────┐           ┌──────────────────┐
+    │ Canary deploy   │           │ Staging restored │
+    │ Model version X │           │ Model version X-1│
+    └─────────────────┘           └──────────────────┘
+```
+
+**Key takeaways:**
+
+1. **Automated gating**: Tests act as quality gates that prevent bad models from reaching production
+2. **Fast feedback**: Failures are detected within minutes, not hours or days
+3. **Automatic recovery**: No human intervention needed to roll back failed deployments
+4. **Audit trail**: All test results and decisions are logged in Argo Workflows
+
+
+
+### Manual promotion baseline
+
+While we now have automated promotion from staging to canary, it's useful to understand the manual promotion workflow as a baseline. You can also use this workflow to promote from canary to production, where manual oversight is typically desired for safety.
+
+From the Argo Workflows UI, find the `promote-model` workflow template and click "Submit".
+
+For example, to manually promote from canary to production:
+
+* Specify "canary" as the source environment
+* Specify "production" as the target environment
+* Specify the version number of the model that is currently in canary (e.g., `5` or whatever version passed staging tests)
+
+Then, run the workflow.
+
+In the ArgoCD UI, you will see that a new pod is created for the "gourmetgram-production" application, and then the pre-existing pod is deleted. Once the new pod is healthy, check the version that is deployed to the "production" environment (`http://A.B.C.D/version`) to verify.
 
 Take a screenshot, with both the address bar showing the URL and the response showing the version number visible in the screenshot. Also, take a screenshot of the updated list of model versions in the MLFlow UI (the alias list will have changed!).
 
+**Why keep manual promotion to production?**
 
-After some online evaluation with a small number of users, the model may be promoted to a "production" environment. Let's do that, too. From the Argo Workflows UI, find the `promote-model` workflow template and click "Submit". 
+Even with comprehensive automated testing, many organizations prefer manual approval before production deployment because:
 
-* specify "canary" as the source environment
-* specify "production" as the target environment
-* and, specify the version number of the model again
-
-Then, run the workflow. Check the version that is deployed to the "production" environment (`http://A.B.C.D/version`) to verify. 
-
-Take a screenshot, with both the address bar showing the URL and the response showing the version number visible in the screenshot. Also, take a screenshot of the updated list of model versions in the MLFlow UI (the alias list will have changed!).
+1. **Business considerations**: Timing of releases may depend on business factors (marketing campaigns, support readiness, etc.)
+2. **Final verification**: Human oversight for the most critical environment
+3. **Compliance**: Regulatory requirements may mandate human approval
+4. **Risk management**: Canary testing provides real-world validation before full production rollout
 
 
+
+### Comparison: Manual vs. Automated promotion
+
+| Aspect | Manual Promotion | Automated Promotion |
+|--------|------------------|---------------------|
+| **Trigger** | Human clicks "Submit" in Argo UI | Tests complete successfully |
+| **Validation** | Human judgment, manual testing | Automated integration, resource, and load tests |
+| **Speed** | Hours to days | Minutes |
+| **Consistency** | Varies by operator | Same checks every time |
+| **Failure handling** | Manual rollback required | Automatic revert on test failure |
+| **Audit trail** | Manual notes/tickets | Workflow logs with test results |
+| **Best for** | Production deployments, risky changes | Staging→Canary, frequent releases |
+
+**Hybrid approach (recommended):**
+- Automate staging → canary promotion (with automated revert on failure)
+- Keep canary → production promotion manual (with human approval)
+
+This balances speed and automation with safety and control.
+
+
+
+### Summary: Model lifecycle with automated testing
+
+In this section, we've seen:
+
+1. **Three types of automated tests** that validate new models before promotion:
+   - Integration testing (model-app compatibility)
+   - Resource testing (model-infrastructure compatibility)
+   - Load testing (operational performance metrics)
+
+2. **Branching logic** that makes decisions based on test results:
+   - Pass → Auto-promote to canary
+   - Fail → Auto-revert to previous version
+
+3. **Failure scenarios** that demonstrate the safety mechanisms:
+   - Bad architecture → Integration test catches it → Revert
+   - Oversized model → Resource test catches it → Revert
+
+4. **Manual promotion baseline** for comparison and use in production deployments
+
+The key insight: **Automated testing transforms the MLOps pipeline from a manual, error-prone process to a fast, reliable, self-healing system**. Bad models never reach production because they're caught and automatically reverted in staging.
+
+In the next section, we'll explore additional trigger mechanisms for the training pipeline, including scheduled retraining with CronWorkflows.
 
 
 
