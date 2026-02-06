@@ -19,7 +19,7 @@ We will start with the first stage, where:
 
 ### The training environment
 
-In this lab, model training runs as a **Kubernetes pod** managed by Argo Workflows — it does not require a separate container or a manually-started server. The training container image (built from `train/` in the mlops-chi repository) is pushed to the local cluster registry as part of the initial setup, and Argo launches it as a pod when training is triggered.
+In this lab, model training runs as a **Kubernetes pod** managed by Argo Workflows — it does not require a separate container or a manually-started server. The training container image (built from the [gourmetgram-train](https://github.com/teaching-on-testbeds/gourmetgram-train) repository) is pushed to the local cluster registry as part of the initial setup, and Argo launches it as a pod when training is triggered.
 
 Because the training pod runs inside the same cluster as MLflow, it can reach the model registry directly over the cluster-internal network (`mlflow.gourmetgram-platform.svc.cluster.local:8000`). No floating IP or port mapping is needed.
 
