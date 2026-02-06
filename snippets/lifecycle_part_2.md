@@ -88,10 +88,10 @@ The `test-staging` workflow's first step calls the staging service's `/test` end
 
       # Verify response is a valid food class name
       if echo "$RESPONSE" | grep -qE "(Bread|Dairy product|Dessert|...)"; then
-        echo "✅ Integration test PASSED"
+        echo "✓ Integration test PASSED"
         echo "pass"
       else
-        echo "❌ Integration test FAILED"
+        echo "✗ Integration test FAILED"
         echo "fail"
       fi
 ```
@@ -128,14 +128,14 @@ The second step of `test-staging` checks the pod status using `kubectl`:
           -l app=gourmetgram-staging -o jsonpath='{.items[0].status.containerStatuses[0].state}')
 
         if echo "$CONTAINER_STATE" | grep -q "OOMKilled"; then
-          echo "❌ Resource test FAILED: Container is OOMKilled"
+          echo "✗ Resource test FAILED: Container is OOMKilled"
           echo "fail"
         else
-          echo "✅ Resource test PASSED"
+          echo "✓ Resource test PASSED"
           echo "pass"
         fi
       else
-        echo "❌ Resource test FAILED: Pod status is $POD_STATUS"
+        echo "✗ Resource test FAILED: Pod status is $POD_STATUS"
         echo "fail"
       fi
 ```
@@ -174,10 +174,10 @@ The third step uses `hey`, a load testing tool, to send concurrent requests:
       # - P95 latency must be < 2000ms
 
       if [ "$SUCCESS_RATE" -gt 95 ] && [ "$P95_MS" -lt 2000 ]; then
-        echo "✅ Load test PASSED"
+        echo "✓ Load test PASSED"
         echo "pass"
       else
-        echo "❌ Load test FAILED"
+        echo "✗ Load test FAILED"
         echo "fail"
       fi
 ```
@@ -230,9 +230,9 @@ This branching is implemented using Argo Workflows' `when` conditions. Each bran
 
 In the Argo Workflows UI, watch the `test-staging` workflow after a successful staging deployment:
 
-1. **integration-test** step runs → should show ✅ PASSED
-2. **resource-test** step runs → should show ✅ PASSED
-3. **load-test** step runs → should show ✅ PASSED
+1. **integration-test** step runs → should show ✓ PASSED
+2. **resource-test** step runs → should show ✓ PASSED
+3. **load-test** step runs → should show ✓ PASSED
 4. **promote-on-success** step triggers → creates a new `promote-model` workflow
 
 Click on the new `promote-model` workflow to watch it execute:
@@ -303,10 +303,10 @@ To trigger this scenario, you would need to modify the training workflow to pass
 **Observe in Argo Workflows:**
 
 * The `test-staging` workflow shows:
-  - ✅ deployment successful
-  - ❌ integration-test FAILED
+  - deployment successful
+  - integration-test FAILED
   - (resource-test and load-test are skipped)
-  - ⚠️ revert-on-failure step executes
+  - revert-on-failure step executes
 * A new `revert-staging` workflow appears
 
 **What the revert workflow does:**
@@ -379,9 +379,9 @@ To trigger this scenario, modify the training workflow similarly:
 **Observe in Argo Workflows:**
 
 * The `test-staging` workflow shows:
-  - ✅ integration-test PASSED (or MAY fail if pod crashes during request)
-  - ❌ resource-test FAILED: Pod is OOMKilled
-  - ⚠️ revert-on-failure step executes
+  - integration-test PASSED (or MAY fail if pod crashes during request)
+  - resource-test FAILED: Pod is OOMKilled
+  - revert-on-failure step executes
 
 **After revert:**
 
@@ -401,9 +401,9 @@ Take screenshots of:
 
 Let's visualize the complete flow from staging to canary with automated testing:
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────┐
-│ build-container-image workflow completes                     │
+│ build-container-image workflow completes                    │
 └───────────────────┬─────────────────────────────────────────┘
                     │
         ┌───────────┴───────────┐

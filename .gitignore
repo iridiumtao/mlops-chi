@@ -1,6 +1,3 @@
-# Ignore oversized model and bad model (local testing only)
-train/oversized_model.pth
-train/bad_model.pth
 
 # macOS
 .DS_Store
@@ -56,3 +53,6 @@ _site/
 
 CLAUDE.md
 .claude/
+
+_TODO.md
+_LOCAL_TESTING.md
