@@ -25,22 +25,15 @@ Because the training pod runs inside the same cluster as MLflow, it can reach th
 
 For now, the model "training" job is a dummy training job that just loads and logs a pre-trained model. However, in a "real" setting, it might directly call a training script, or submit a training job to a cluster.
 
-The training pipeline supports different **scenarios** for testing failure cases:
+The training code simply loads a pre-trained model file (`food11.pth`) and logs it to MLflow:
 
 ```python
 @task
-def load_and_train_model(scenario: str = "normal"):
+def load_and_train_model():
     logger = get_run_logger()
-    logger.info(f"Loading model with scenario: {scenario}")
+    logger.info("Loading model...")
 
-    # Map scenario to model file
-    scenario_to_model = {
-        "normal": "food11.pth",
-        "bad-architecture": "bad_model.pth",
-        "oversized": "oversized_model.pth"
-    }
-
-    model_path = scenario_to_model.get(scenario, "food11.pth")
+    model_path = "food11.pth"
     logger.info(f"Loading model from {model_path}...")
     time.sleep(10)
 
@@ -51,10 +44,7 @@ def load_and_train_model(scenario: str = "normal"):
     return model
 ```
 
-These scenarios allow us to test how the pipeline handles:
-- **normal**: A valid MobileNetV2 model that works correctly
-- **bad-architecture**: A model with incompatible architecture (will fail in staging tests)
-- **oversized**: A model that exceeds Kubernetes resource limits (will fail deployment)
+Note that the training code itself doesn't know anything about "good" or "bad" models — it just loads whatever `food11.pth` is present. To test failure scenarios (e.g., incompatible architecture, oversized model), we use different **Git branches** of the `gourmetgram-train` repository, each containing a different model variant. We'll see this in action in Part 2.
 
 :::
 
@@ -219,10 +209,10 @@ The training script writes the model version to `/tmp/model_version` after succe
 
 ```python
 if __name__ == "__main__":
-    # Support command-line argument for scenario (default: normal)
-    scenario = sys.argv[1] if len(sys.argv) > 1 else "normal"
-    version = ml_pipeline_flow(scenario)
-    
+    print("Starting training pipeline...")
+
+    version = ml_pipeline_flow()
+
     # Write model version for workflow to read
     with open("/tmp/model_version", "w") as f:
         f.write("" if version is None else str(version))

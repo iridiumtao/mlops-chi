@@ -262,7 +262,15 @@ Take screenshots of:
 
 ### Demonstrating failure scenarios
 
-To understand how the automated testing protects production, let's intentionally deploy a bad model and observe the revert behavior.
+To understand how the automated testing protects production, let's intentionally deploy bad models using different Git branches and observe the automated testing and revert behavior.
+
+The training container repository (`gourmetgram-train`) has three branches:
+
+* **mlops**: Contains the correct MobileNetV2 model (default)
+* **mlops-bad-arch**: Contains a ResNet model (incompatible architecture)
+* **mlops-bad-size**: Contains an oversized model (>200Mi, exceeds K8s memory limits)
+
+We'll use Git branches to control which model variant gets built into the training container, similar to how we used branches for the MLFlow tracking example earlier.
 
 :::
 
@@ -274,31 +282,24 @@ To understand how the automated testing protects production, let's intentionally
 
 **Steps to trigger:**
 
-To trigger this scenario, you would need to modify the training workflow to pass the scenario parameter:
+Build the training container from the `mlops-bad-arch` branch:
 
-1. Edit the `train-model` workflow template in the Argo Workflows UI
-2. Update the `run-training` container command to include the scenario:
-   ```yaml
-   container:
-     image: registry.kube-system.svc.cluster.local:5000/gourmetgram-train:latest
-     command: [python, flow.py, bad-architecture]  # Pass scenario as argument
-     env:
-       - name: MLFLOW_TRACKING_URI
-         value: "http://mlflow.gourmetgram-platform.svc.cluster.local:8000"
-   ```
-3. Submit the modified workflow
+```bash
+ansible-playbook -i ansible_inventory ansible/argocd/workflow_build_training_init.yml -e branch=mlops-bad-arch
+```
 
-**Note:** In a real deployment, you would create separate workflow templates for different scenarios (e.g., `train-model-bad-architecture`), or add a workflow parameter that gets passed through to the training pod
+This command builds a training container from the `mlops-bad-arch` branch. When the container is built, the Dockerfile generates a ResNet18 model instead of MobileNetV2. The training code (`flow.py`) simply loads `food11.pth` - it doesn't know or care that the model architecture is wrong.
 
 **What happens:**
 
-1. The training service loads `bad_model.pth` (a ResNet model) instead of the normal MobileNetV2 model
-2. The model is registered to MLFlow with a new version number (e.g., version 6)
-3. The build workflow packages the bad model into a container
-4. The container is deployed to staging
-5. **Integration test runs and FAILS**: The application expects MobileNetV2's output structure, but receives ResNet's structure
-6. The `test-staging` workflow detects the failure
-7. **Revert workflow is triggered automatically**
+1. The training container is built with a ResNet model (generated during Docker build)
+2. When triggered, the training workflow runs and loads the ResNet model
+3. The model is registered to MLFlow with a new version number (e.g., version 6)
+4. The build workflow packages the ResNet model into the gourmetgram app container
+5. The container is deployed to staging
+6. **Integration test runs and FAILS**: The application expects MobileNetV2's feature dimensions (1280), but the ResNet model has 512 dimensions
+7. The `test-staging` workflow detects the failure
+8. **Revert workflow is triggered automatically**
 
 **Observe in Argo Workflows:**
 
@@ -354,27 +355,24 @@ Take screenshots of:
 
 **Steps to trigger:**
 
-To trigger this scenario, modify the training workflow similarly:
+Build the training container from the `mlops-bad-size` branch:
 
-1. Edit the `train-model` workflow template in the Argo Workflows UI
-2. Update the `run-training` container command to include the oversized scenario:
-   ```yaml
-   container:
-     image: registry.kube-system.svc.cluster.local:5000/gourmetgram-train:latest
-     command: [python, flow.py, oversized]  # Pass oversized scenario
-     env:
-       - name: MLFLOW_TRACKING_URI
-         value: "http://mlflow.gourmetgram-platform.svc.cluster.local:8000"
-   ```
-3. Submit the modified workflow
+```bash
+ansible-playbook -i ansible_inventory ansible/argocd/workflow_build_training_init.yml -e branch=mlops-bad-size
+```
+
+This builds a training container where the Dockerfile generates an oversized MobileNetV2 model (>200Mi) with dummy weight padding.
 
 **What happens:**
 
-1. The training service creates `oversized_model.pth` (artificially inflated to >200Mi)
-2. The model is packaged into a container and deployed to staging
-3. Kubernetes tries to start the pod, but the model loading exceeds 256Mi memory limit
-4. **Resource test detects OOMKilled or CrashLoopBackOff status**
-5. The `test-staging` workflow triggers revert
+1. The training container is built with an oversized model (generated during Docker build)
+2. When triggered, the training workflow runs and registers the oversized model to MLFlow
+3. The model is packaged into the gourmetgram app container
+4. The container is deployed to staging
+5. Kubernetes tries to start the pod, but the model loading exceeds 256Mi memory limit
+6. **Pod status becomes OOMKilled or CrashLoopBackOff**
+7. **Resource test detects the pod is not Running**
+8. The `test-staging` workflow triggers revert
 
 **Observe in Argo Workflows:**
 
@@ -382,6 +380,14 @@ To trigger this scenario, modify the training workflow similarly:
   - integration-test PASSED (or MAY fail if pod crashes during request)
   - resource-test FAILED: Pod is OOMKilled
   - revert-on-failure step executes
+
+**Check pod status:**
+
+```bash
+kubectl get pods -n gourmetgram-staging
+```
+
+You should see the pod in `OOMKilled` or `CrashLoopBackOff` status.
 
 **After revert:**
 
