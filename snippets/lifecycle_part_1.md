@@ -77,10 +77,11 @@ def evaluate_model():
         )
 
         # Save complete pytest output as MLFlow artifact
-        full_output = "PYTEST TEST EXECUTION LOG\n"
-        full_output += f"Exit Code: {result.returncode}\n"
+        full_output = f"Exit Code: {result.returncode}\n"
         full_output += f"Status: {'PASSED' if result.returncode == 0 else 'FAILED'}\n\n"
         full_output += result.stdout
+        if result.stderr:
+            full_output += f"\n--- STDERR ---\n{result.stderr}"
 
         pytest_log_path = "/tmp/pytest_output.txt"
         with open(pytest_log_path, "w") as f:
@@ -88,7 +89,6 @@ def evaluate_model():
         mlflow.log_artifact(pytest_log_path, artifact_path="test_logs")
 
         # Parse and log test metrics
-        import re
         passed_match = re.search(r'(\d+)\s+passed', result.stdout)
         failed_match = re.search(r'(\d+)\s+failed', result.stdout)
         tests_passed = int(passed_match.group(1)) if passed_match else 0
@@ -97,13 +97,10 @@ def evaluate_model():
         mlflow.log_metric("tests_passed", tests_passed)
         mlflow.log_metric("tests_failed", tests_failed)
         mlflow.log_metric("tests_total", tests_passed + tests_failed)
-        mlflow.log_param("pytest_status",
-                         "passed" if result.returncode == 0 else "failed")
 
         return result.returncode == 0
     except Exception as e:
-        logger.error(f"Failed to run pytest: {str(e)}")
-        mlflow.log_param("pytest_status", "error")
+        logger.error(f"Failed to run pytest: {e}")
         return False
 ```
 
