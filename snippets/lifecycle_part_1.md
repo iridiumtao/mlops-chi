@@ -60,7 +60,7 @@ In a real MLOps pipeline, model evaluation is critical. Instead of hardcoding ev
 * **Extensibility**: Easy to add new tests without modifying the main training code
 * **Reusability**: Same test framework used throughout software engineering
 
-Our evaluation step runs pytest against a test directory:
+Our evaluation step runs pytest against a test directory and saves the complete output as an MLFlow artifact for permanent access:
 
 ```python
 @task
@@ -69,62 +69,257 @@ def evaluate_model():
     logger.info("Running pytest test suite for model evaluation...")
 
     try:
-        # Execute pytest and capture results
         result = subprocess.run(
-            ["pytest", "tests/", "-v", "--tb=short"],
+            ["pytest", "tests/", "-v", "-s", "--tb=short"],
             cwd="/app",
             capture_output=True,
             text=True
         )
 
-        all_tests_passed = (result.returncode == 0)
+        # Save complete pytest output as MLFlow artifact
+        full_output = "PYTEST TEST EXECUTION LOG\n"
+        full_output += f"Exit Code: {result.returncode}\n"
+        full_output += f"Status: {'PASSED' if result.returncode == 0 else 'FAILED'}\n\n"
+        full_output += result.stdout
 
-        # Extract test counts from pytest output
-        output_lines = result.stdout + result.stderr
-        tests_passed = 0
-        tests_failed = 0
+        pytest_log_path = "/tmp/pytest_output.txt"
+        with open(pytest_log_path, "w") as f:
+            f.write(full_output)
+        mlflow.log_artifact(pytest_log_path, artifact_path="test_logs")
 
+        # Parse and log test metrics
         import re
-        passed_match = re.search(r'(\d+) passed', output_lines)
-        failed_match = re.search(r'(\d+) failed', output_lines)
+        passed_match = re.search(r'(\d+)\s+passed', result.stdout)
+        failed_match = re.search(r'(\d+)\s+failed', result.stdout)
+        tests_passed = int(passed_match.group(1)) if passed_match else 0
+        tests_failed = int(failed_match.group(1)) if failed_match else 0
 
-        if passed_match:
-            tests_passed = int(passed_match.group(1))
-        if failed_match:
-            tests_failed = int(failed_match.group(1))
-
-        # Log metrics to MLFlow
         mlflow.log_metric("tests_passed", tests_passed)
         mlflow.log_metric("tests_failed", tests_failed)
         mlflow.log_metric("tests_total", tests_passed + tests_failed)
+        mlflow.log_param("pytest_status",
+                         "passed" if result.returncode == 0 else "failed")
 
-        return all_tests_passed
-
+        return result.returncode == 0
     except Exception as e:
-        logger.error(f"Failed to execute pytest: {e}")
+        logger.error(f"Failed to run pytest: {str(e)}")
+        mlflow.log_param("pytest_status", "error")
         return False
 ```
 
-The tests themselves live in a `tests/` directory. For this tutorial, we use "dummy" tests that simulate realistic evaluation behavior:
+:::
+
+::: {.cell .markdown}
+
+### Understanding the pytest test suite
+
+The test suite is organized into two files:
+
+**tests/test_model_structure.py** — Validates model architecture and structure:
 
 ```python
-# tests/test_model_accuracy.py
-import random
+@pytest.fixture(scope="module")
+def model():
+    # Load model once and share across all tests
+    model = torch.load("food11.pth", weights_only=False, map_location=torch.device('cpu'))
+    return model
 
-def test_model_accuracy():
-    """Simulate model accuracy test with probabilistic results"""
-    # 70% chance of high accuracy (0.85), 30% chance of lower accuracy (0.75)
-    simulated_accuracy = random.choices([0.85, 0.75], weights=[0.7, 0.3])[0]
-    assert simulated_accuracy >= 0.80, f"Accuracy {simulated_accuracy} below threshold"
+def test_model_loadable():
+    # Verify model file exists and is loadable
+    model = torch.load("food11.pth", weights_only=False, map_location=torch.device('cpu'))
+    assert model is not None
+
+def test_model_architecture(model):
+    # Verify model is MobileNetV2-based
+    assert hasattr(model, 'features'), "Model missing 'features' attribute"
+    assert isinstance(model.features, nn.Sequential)
+
+def test_model_parameters(model):
+    # Verify model has expected parameter count
+    total_params = sum(p.numel() for p in model.parameters())
+    assert 2_000_000 < total_params < 3_000_000
+
+def test_model_output_shape(model):
+    # Verify model outputs 11 classes
+    dummy_input = torch.randn(1, 3, 224, 224)
+    output = model(dummy_input)
+    assert output.shape == (1, 11)
+
+def test_model_inference_runs(model):
+    # Verify model runs inference without crashing
+    dummy_input = torch.randn(1, 3, 224, 224)
+    output = model(dummy_input)
+    assert torch.isfinite(output).all()
+    assert 0 <= output.argmax(dim=1).item() < 11
 ```
 
-In a real setting, these tests would:
-* Load a validation dataset
-* Run inference on the model
-* Calculate actual metrics (accuracy, precision, recall, F1)
-* Verify the model meets minimum quality thresholds
+**Key pattern: Pytest Fixtures**
 
-The key pattern here is: **integrate established testing frameworks into your MLOps pipeline**, rather than reinventing evaluation logic.
+Notice the `@pytest.fixture` decorator on the `model()` function. This is a pytest fixture that loads the model **once** and shares it across all test functions that request it. This is more efficient than loading the model separately in each test.
+
+Tests that need the model simply accept `model` as a parameter:
+
+```python
+def test_model_architecture(model):  # ← pytest injects the fixture
+    # model is already loaded, no need to load again
+    assert hasattr(model, 'features')
+```
+
+The `test_model_loadable()` test doesn't use the fixture because it specifically tests the loading process itself.
+
+**tests/test_model_accuracy.py** — Validates model performance:
+
+This test uses probabilistic behavior to simulate real-world ML model variability:
+
+```python
+def test_model_accuracy():
+    # 70% chance of 0.85 accuracy (passes)
+    # 30% chance of 0.75 accuracy (fails)
+    if random.random() < 0.7:
+        accuracy = 0.85
+    else:
+        accuracy = 0.75
+
+    assert accuracy >= 0.80
+```
+
+This means the same model can pass tests most of the time but occasionally fail — demonstrating why production ML pipelines need proper monitoring and retry mechanisms.
+
+**What happens when tests fail?**
+
+When we deploy the bad architecture model (from the `mlops-bad-arch` branch), the `test_model_architecture()` test will fail:
+
+```
+FAILED test_model_structure.py::test_model_architecture - AssertionError: Model missing 'features' attribute
+```
+
+This catches the problem during training, before the model even gets registered to MLFlow. However, since we're demonstrating pipeline testing, we'll also see integration tests catch this in staging.
+
+:::
+
+
+::: {.cell .markdown}
+
+### Viewing test results and logs
+
+After the training workflow completes, you can view detailed test results in two places:
+
+**1. MLFlow UI (Permanent Storage)**
+
+Navigate to the MLFlow server and find your training run:
+
+```bash
+# Get MLFlow URL
+echo "http://$(head -1 /etc/hosts | awk '{print $1}'):8000"
+```
+
+In the MLFlow UI:
+
+1. Click on the "food11-classifier" experiment
+2. Click on your run (most recent at the top)
+3. Navigate to the "Artifacts" tab
+4. You'll see several artifact directories:
+   - **test_logs/pytest_output.txt**: Complete pytest output with all test results
+   - **logs/flow_summary.txt**: Summary of the training flow execution
+   - **model/**: The trained model artifacts
+
+Download and view `pytest_output.txt` to see detailed test results:
+
+```
+================================================================================
+PYTEST TEST EXECUTION LOG
+================================================================================
+
+Exit Code: 0
+Status: PASSED
+
+================================================================================
+STDOUT
+================================================================================
+============================= test session starts ==============================
+collected 6 items
+
+tests/test_model_structure.py::test_model_loadable PASSED              [ 16%]
+tests/test_model_structure.py::test_model_architecture PASSED          [ 33%]
+tests/test_model_structure.py::test_model_parameters PASSED            [ 50%]
+tests/test_model_structure.py::test_model_output_shape PASSED          [ 66%]
+tests/test_model_structure.py::test_model_inference_runs PASSED        [ 83%]
+tests/test_model_accuracy.py::test_model_accuracy PASSED               [100%]
+
+============================== 6 passed in 2.34s ===============================
+```
+
+The `flow_summary.txt` provides a high-level overview of the training run: run ID, timestamps, duration, test pass/fail status, and whether a model was registered.
+
+**2. Argo Workflows UI (Live Logs)**
+
+You can also view logs in real-time during workflow execution:
+
+```bash
+# Get Argo Workflows URL
+echo "http://$(head -1 /etc/hosts | awk '{print $1}'):2746"
+```
+
+In the Argo UI:
+
+1. Click on the "train-model-xxxxx" workflow
+2. Click on the "run-training" pod
+3. View the logs tab
+
+The logs show the same pytest output inline, plus additional Prefect logging information. However, these logs are only available while the workflow pods exist. For permanent access, use the MLFlow artifacts.
+
+**Key Differences:**
+
+| Location | Availability | Content |
+|----------|--------------|---------|
+| MLFlow Artifacts | Permanent (stored in MinIO) | Complete pytest output + summary |
+| Argo Workflow Logs | Temporary (until pod deleted) | Real-time logs + pytest output |
+
+**Best Practice**: Always check MLFlow artifacts for historical debugging. Use Argo logs for watching live execution.
+
+:::
+
+
+::: {.cell .markdown}
+
+### Example: debugging test failures
+
+If a model fails tests, the `pytest_output.txt` artifact will show exactly what went wrong:
+
+```
+================================================================================
+PYTEST TEST EXECUTION LOG
+================================================================================
+
+Exit Code: 1
+Status: FAILED
+
+================================================================================
+STDOUT
+================================================================================
+============================= test session starts ==============================
+collected 6 items
+
+tests/test_model_structure.py::test_model_loadable PASSED              [ 16%]
+tests/test_model_structure.py::test_model_architecture FAILED          [ 33%]
+
+=================================== FAILURES ===================================
+_________________________ test_model_architecture __________________________
+
+model = ResNet(...)
+
+    def test_model_architecture(model):
+        assert hasattr(model, 'features'), \
+>           "Model missing 'features' attribute (expected for MobileNetV2)"
+E       AssertionError: Model missing 'features' attribute (expected for MobileNetV2)
+
+tests/test_model_structure.py:29: AssertionError
+========================= short test summary info ============================
+FAILED tests/test_model_structure.py::test_model_architecture
+========================= 1 failed, 1 passed in 1.82s ==========================
+```
+
+This makes it easy to identify why a model didn't get registered — in this case, it's not a MobileNetV2 model as expected.
 
 When the pipeline runs, if tests pass, it registers the model in MLflow with the alias `"development"`, and writes the new model version number to a file. Argo reads that file as an output parameter and uses it to trigger the next step in the workflow.
 
@@ -205,18 +400,7 @@ This template:
 - Sets the MLFlow tracking URI to reach the MLFlow service inside the cluster
 - Captures the model version from `/tmp/model_version` as an output parameter
 
-The training script writes the model version to `/tmp/model_version` after successful registration:
-
-```python
-if __name__ == "__main__":
-    print("Starting training pipeline...")
-
-    version = ml_pipeline_flow()
-
-    # Write model version for workflow to read
-    with open("/tmp/model_version", "w") as f:
-        f.write("" if version is None else str(version))
-```
+The training script writes the model version to `/tmp/model_version` after successful registration. The `training_flow()` function handles this internally — if tests pass and a model is registered, it writes the version number; otherwise, it writes an empty string.
 
 :::
 
