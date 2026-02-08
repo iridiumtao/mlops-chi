@@ -112,7 +112,7 @@ def evaluate_model():
 
 The test suite is organized into two files:
 
-**tests/test_model_structure.py** — Validates model architecture and structure:
+**tests/test_model_structure.py** — Validates that the model can be loaded and has the expected size:
 
 ```python
 @pytest.fixture(scope="module")
@@ -126,28 +126,10 @@ def test_model_loadable():
     model = torch.load("food11.pth", weights_only=False, map_location=torch.device('cpu'))
     assert model is not None
 
-def test_model_architecture(model):
-    # Verify model is MobileNetV2-based
-    assert hasattr(model, 'features'), "Model missing 'features' attribute"
-    assert isinstance(model.features, nn.Sequential)
-
 def test_model_parameters(model):
     # Verify model has expected parameter count
     total_params = sum(p.numel() for p in model.parameters())
     assert 2_000_000 < total_params < 3_000_000
-
-def test_model_output_shape(model):
-    # Verify model outputs 11 classes
-    dummy_input = torch.randn(1, 3, 224, 224)
-    output = model(dummy_input)
-    assert output.shape == (1, 11)
-
-def test_model_inference_runs(model):
-    # Verify model runs inference without crashing
-    dummy_input = torch.randn(1, 3, 224, 224)
-    output = model(dummy_input)
-    assert torch.isfinite(output).all()
-    assert 0 <= output.argmax(dim=1).item() < 11
 ```
 
 **Key pattern: Pytest Fixtures**
@@ -157,9 +139,10 @@ Notice the `@pytest.fixture` decorator on the `model()` function. This is a pyte
 Tests that need the model simply accept `model` as a parameter:
 
 ```python
-def test_model_architecture(model):  # ← pytest injects the fixture
+def test_model_parameters(model):  # ← pytest injects the fixture
     # model is already loaded, no need to load again
-    assert hasattr(model, 'features')
+    total_params = sum(p.numel() for p in model.parameters())
+    assert 2_000_000 < total_params < 3_000_000
 ```
 
 The `test_model_loadable()` test doesn't use the fixture because it specifically tests the loading process itself.
@@ -184,10 +167,10 @@ This means the same model can pass tests most of the time but occasionally fail 
 
 **What happens when tests fail?**
 
-When we deploy the bad architecture model (from the `mlops-bad-arch` branch), the `test_model_architecture()` test will fail:
+When we deploy the bad architecture model (from the `mlops-bad-arch` branch), the `test_model_parameters()` test will fail because a ResNet18 model has ~11.7M parameters, far outside the expected 2–3M range:
 
 ```
-FAILED test_model_structure.py::test_model_architecture - AssertionError: Model missing 'features' attribute
+FAILED test_model_structure.py::test_model_parameters - AssertionError: Model has 11,181,642 parameters (expected 2,000,000 to 3,000,000)
 ```
 
 This catches the problem during training, before the model even gets registered to MLFlow. However, since we're demonstrating pipeline testing, we'll also see integration tests catch this in staging.
@@ -217,36 +200,23 @@ In the MLFlow UI:
 3. Navigate to the "Artifacts" tab
 4. You'll see several artifact directories:
    - **test_logs/pytest_output.txt**: Complete pytest output with all test results
-   - **logs/flow_summary.txt**: Summary of the training flow execution
    - **model/**: The trained model artifacts
 
 Download and view `pytest_output.txt` to see detailed test results:
 
 ```
-================================================================================
-PYTEST TEST EXECUTION LOG
-================================================================================
-
 Exit Code: 0
 Status: PASSED
 
-================================================================================
-STDOUT
-================================================================================
 ============================= test session starts ==============================
-collected 6 items
+collected 3 items
 
-tests/test_model_structure.py::test_model_loadable PASSED              [ 16%]
-tests/test_model_structure.py::test_model_architecture PASSED          [ 33%]
-tests/test_model_structure.py::test_model_parameters PASSED            [ 50%]
-tests/test_model_structure.py::test_model_output_shape PASSED          [ 66%]
-tests/test_model_structure.py::test_model_inference_runs PASSED        [ 83%]
+tests/test_model_structure.py::test_model_loadable PASSED              [ 33%]
+tests/test_model_structure.py::test_model_parameters PASSED            [ 66%]
 tests/test_model_accuracy.py::test_model_accuracy PASSED               [100%]
 
-============================== 6 passed in 2.34s ===============================
+============================== 3 passed in 2.34s ===============================
 ```
-
-The `flow_summary.txt` provides a high-level overview of the training run: run ID, timestamps, duration, test pass/fail status, and whether a model was registered.
 
 **2. Argo Workflows UI (Live Logs)**
 
@@ -269,7 +239,7 @@ The logs show the same pytest output inline, plus additional Prefect logging inf
 
 | Location | Availability | Content |
 |----------|--------------|---------|
-| MLFlow Artifacts | Permanent (stored in MinIO) | Complete pytest output + summary |
+| MLFlow Artifacts | Permanent (stored in MinIO) | Complete pytest output |
 | Argo Workflow Logs | Temporary (until pod deleted) | Real-time logs + pytest output |
 
 **Best Practice**: Always check MLFlow artifacts for historical debugging. Use Argo logs for watching live execution.
@@ -281,42 +251,38 @@ The logs show the same pytest output inline, plus additional Prefect logging inf
 
 ### Example: debugging test failures
 
-If a model fails tests, the `pytest_output.txt` artifact will show exactly what went wrong:
+If a model fails tests, the `pytest_output.txt` artifact will show exactly what went wrong. For example, when using the `mlops-bad-arch` branch (ResNet model with ~11.7M parameters):
 
 ```
-================================================================================
-PYTEST TEST EXECUTION LOG
-================================================================================
-
 Exit Code: 1
 Status: FAILED
 
-================================================================================
-STDOUT
-================================================================================
 ============================= test session starts ==============================
-collected 6 items
+collected 3 items
 
-tests/test_model_structure.py::test_model_loadable PASSED              [ 16%]
-tests/test_model_structure.py::test_model_architecture FAILED          [ 33%]
+tests/test_model_structure.py::test_model_loadable PASSED              [ 33%]
+tests/test_model_structure.py::test_model_parameters FAILED            [ 66%]
 
 =================================== FAILURES ===================================
-_________________________ test_model_architecture __________________________
+_________________________ test_model_parameters __________________________
 
 model = ResNet(...)
 
-    def test_model_architecture(model):
-        assert hasattr(model, 'features'), \
->           "Model missing 'features' attribute (expected for MobileNetV2)"
-E       AssertionError: Model missing 'features' attribute (expected for MobileNetV2)
+    def test_model_parameters(model):
+        total_params = sum(p.numel() for p in model.parameters())
+        min_params = 2_000_000
+        max_params = 3_000_000
+        assert min_params < total_params < max_params, \
+>           f"Model has {total_params:,} parameters (expected {min_params:,} to {max_params:,})"
+E       AssertionError: Model has 11,181,642 parameters (expected 2,000,000 to 3,000,000)
 
-tests/test_model_structure.py:29: AssertionError
+tests/test_model_structure.py:44: AssertionError
 ========================= short test summary info ============================
-FAILED tests/test_model_structure.py::test_model_architecture
+FAILED tests/test_model_structure.py::test_model_parameters
 ========================= 1 failed, 1 passed in 1.82s ==========================
 ```
 
-This makes it easy to identify why a model didn't get registered — in this case, it's not a MobileNetV2 model as expected.
+This makes it easy to identify why a model didn't get registered — in this case, the model has far more parameters than the expected MobileNetV2 range.
 
 When the pipeline runs, if tests pass, it registers the model in MLflow with the alias `"development"`, and writes the new model version number to a file. Argo reads that file as an output parameter and uses it to trigger the next step in the workflow.
 
@@ -490,7 +456,7 @@ You can schedule training to run periodically using Argo's `CronWorkflow` resour
 apiVersion: argoproj.io/v1alpha1
 kind: CronWorkflow
 metadata:
-  name: train-model-cron
+  name: cron-train
 spec:
   schedule: "0 2 * * *"  # Run at 2 AM every day
   workflowSpec:

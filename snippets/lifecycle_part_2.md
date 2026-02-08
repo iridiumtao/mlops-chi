@@ -301,15 +301,6 @@ This command builds a training container from the `mlops-bad-arch` branch. When 
 7. The `test-staging` workflow detects the failure
 8. **Revert workflow is triggered automatically**
 
-**Observe in Argo Workflows:**
-
-* The `test-staging` workflow shows:
-  - deployment successful
-  - integration-test FAILED
-  - (resource-test and load-test are skipped)
-  - revert-on-failure step executes
-* A new `revert-staging` workflow appears
-
 **What the revert workflow does:**
 
 ```yaml
